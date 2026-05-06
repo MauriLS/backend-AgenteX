@@ -1,97 +1,87 @@
-const supabase = require('../config/supabase'); 
+// backend-AgenteX/controllers/chat.controller.js
 
 const sendMessage = async (req, res) => {
     try {
-        // 1. Extraer datos del escudo (Token) y del cuerpo
-        const userId = req.user.id; 
+        const userId = req.user.id;
         const { prompt } = req.body;
-        const agentId = 1; 
+        const agentId = 1;
 
-        if (!prompt) {
-            return res.status(400).json({ error: "El prompt no puede estar vacío." });
-        }
+        if (!prompt) return res.status(400).json({ error: "Prompt requerido." });
 
-        // 2. Gestionar la Sesión Buscamos si hay una activa, si no, la creamos
-        // Aquí buscaremos la última sesión del usuario con este agente.
+        // 1. Gestión de Sesión (Obtenemos el ID de la sesión actual)
         let sessionId;
-        const { data: existingSessions, error: sessionError } = await supabase
+        const { data: sessionData } = await supabase
             .from('session_chats')
             .select('id')
             .eq('users_id', userId)
             .eq('agents_id', agentId)
             .order('created_at', { ascending: false })
-            .limit(1);
+            .limit(1)
+            .single();
 
-        if (sessionError) throw sessionError;
-
-        if (existingSessions && existingSessions.length > 0) {
-            sessionId = existingSessions[0].id;
+        if (sessionData) {
+            sessionId = sessionData.id;
         } else {
-            // Crear nueva sesión
-            const { data: newSession, error: createSessionError } = await supabase
+            const { data: newSession } = await supabase
                 .from('session_chats')
                 .insert([{ users_id: userId, agents_id: agentId }])
-                .select()
-                .single();
-            
-            if (createSessionError) throw createSessionError;
+                .select().single();
             sessionId = newSession.id;
         }
 
-        // 3. Auditar el mensaje del USUARIO
-        const { error: userMsgError } = await supabase
+        // 2. RECUPERACIÓN DE MEMORIA (Historial reciente)
+        // Extraemos los últimos 6 mensajes para no saturar el contexto
+        const { data: rawHistory, error: historyError } = await supabase
             .from('messages')
-            .insert([{
-                session_chat_id: sessionId,
-                content: prompt,
-                sender_type: 'USER'
-            }]);
-        
-        if (userMsgError) throw userMsgError;
+            .select('content, sender_type')
+            .eq('session_chat_id', sessionId)
+            .order('created_at', { ascending: false })
+            .limit(6);
 
-        // 4. Delegar al Intermediario de Python (Tu motor IA)
+        if (historyError) throw historyError;
+
+        // Mapeo de roles: Transformamos USER/IA al estándar de la industria (user/assistant)
+        // Invertimos el array (.reverse()) para que los mensajes vayan en orden cronológico
+        const formattedHistory = rawHistory.reverse().map(msg => ({
+            role: msg.sender_type === 'USER' ? 'user' : 'assistant',
+            content: msg.content
+        }));
+
+        // 3. Auditoría del nuevo mensaje del USUARIO
+        await supabase.from('messages').insert([{
+            session_chat_id: sessionId,
+            content: prompt,
+            sender_type: 'USER'
+        }]);
+
+        // 4. Delegación al Motor Python con inyección de historial
         const pythonResponse = await fetch('http://127.0.0.1:8000/api/ia/process', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 user_id: userId,
                 pregunta: prompt,
-                //  Aquí es donde enviaríamos el historial previo a Python si lo necesitara
+                history: formattedHistory // Aquí viaja la memoria del Agente
             })
         });
 
-        if (!pythonResponse.ok) {
-            throw new Error(`Error en el motor IA: ${pythonResponse.statusText}`);
-        }
-
         const iaData = await pythonResponse.json();
-        const iaText = iaData.respuesta || iaData.agente_x; // Ajusta según lo que devuelva tu Python
+        const iaText = iaData.respuesta;
 
-        // 5. Auditar el mensaje de la IA
-        const { error: iaMsgError } = await supabase
-            .from('messages')
-            .insert([{
-                session_chat_id: sessionId,
-                content: iaText,
-                sender_type: 'IA'
-            }]);
+        // 5. Auditoría de la respuesta de la IA
+        await supabase.from('messages').insert([{
+            session_chat_id: sessionId,
+            content: iaText,
+            sender_type: 'IA'
+        }]);
 
-        if (iaMsgError) throw iaMsgError;
-
-        // 6. Retornar el payload final al Frontend
         return res.status(200).json({
             success: true,
-            session_id: sessionId,
-            prompt: prompt,
             respuesta: iaText
         });
 
     } catch (error) {
-        console.error("Error en sendMessage:", error);
-        return res.status(500).json({ error: "Error interno procesando el mensaje." });
+        console.error("Fallo crítico en flujo de chat:", error);
+        return res.status(500).json({ error: "Error en procesamiento de memoria." });
     }
-};
-
-module.exports = {
-    sendMessage
 };
