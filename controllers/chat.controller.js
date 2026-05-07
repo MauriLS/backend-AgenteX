@@ -1,5 +1,5 @@
 // backend-AgenteX/controllers/chat.controller.js
-
+const supabase = require('../config/supabase');
 const sendMessage = async (req, res) => {
     try {
         const userId = req.user.id;
@@ -84,4 +84,8 @@ const sendMessage = async (req, res) => {
         console.error("Fallo crítico en flujo de chat:", error);
         return res.status(500).json({ error: "Error en procesamiento de memoria." });
     }
+
 };
+  module.exports = {
+        sendMessage
+    };
