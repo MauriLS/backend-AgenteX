@@ -70,7 +70,8 @@ Los precios y descripciones cambian constantemente. SIEMPRE debes ejecutar tu he
         const allowedTools = ['consultar_inventario_erp']; 
 
         // 4. Delegación al Motor Python (El Trabajador Agnóstico)
-        const pythonResponse = await fetch('http://127.0.0.1:8000/api/ia/process', {
+        const PYTHON_URL = process.env.PYTHON_ENGINE_URL;
+        const pythonResponse = await fetch(`${PYTHON_URL}/api/ia/process`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
