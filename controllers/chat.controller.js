@@ -1,118 +1,115 @@
-// backend-AgenteX/controllers/chat.controller.js
 const supabase = require('../config/supabase');
 
 const sendMessage = async (req, res) => {
     try {
         const userId = req.user.id;
-        const { prompt } = req.body;
-        const agentId = 1; // Asumimos que 1 es Bodega por ahora
+        const { prompt, agentTemplateId } = req.body;
 
-        if (!prompt) return res.status(400).json({ error: "Prompt requerido." });
+        if (!agentTemplateId) {
+            return res.status(400).json({ error: "Falla de protocolo: agentTemplateId es requerido." });
+        }
 
-        // 1. Gestión de Sesión
-        let sessionId;
-        const { data: sessionData } = await supabase
+        // 1. OBTENER IDENTIDAD Y CONFIGURACIÓN DEL AGENTE (Single Join)
+        const { data: agentData, error: agentError } = await supabase
+            .from('company_agents')
+            .select(`
+                id,
+                temperature,
+                custom_instructions,
+                max_memory_messages,
+                companies ( erp_base_url ),
+                agent_templates ( base_system_prompt, allowed_tools )
+            `)
+            .eq('is_active', true)
+            .eq('agent_template_id', agentTemplateId)
+            .single();
+
+        if (agentError || !agentData) {
+            return res.status(403).json({ error: "Agente no disponible para su organización." });
+        }
+
+        // 2. GESTIÓN DE SESIÓN (Recuperar o Crear)
+        let { data: sessionChat } = await supabase
             .from('session_chats')
             .select('id')
             .eq('users_id', userId)
-            .eq('agents_id', agentId)
-            .order('created_at', { ascending: false })
-            .limit(1)
+            .eq('company_agent_id', agentData.id)
             .single();
 
-        if (sessionData) {
-            sessionId = sessionData.id;
-        } else {
+        if (!sessionChat) {
             const { data: newSession } = await supabase
                 .from('session_chats')
-                .insert([{ users_id: userId, agents_id: agentId }])
-                .select().single();
-            sessionId = newSession.id;
+                .insert([{ users_id: userId, company_agent_id: agentData.id }])
+                .select('id')
+                .single();
+            sessionChat = newSession;
         }
 
-        // 2. RECUPERACIÓN DE MEMORIA (Historial reciente)
-        const { data: rawHistory, error: historyError } = await supabase
+        // 3. RECUPERACIÓN DE MEMORIA (Historial Dinámico)
+        const { data: pastMessages } = await supabase
             .from('messages')
             .select('content, sender_type')
-            .eq('session_chat_id', sessionId)
+            .eq('session_chat_id', sessionChat.id)
             .order('created_at', { ascending: false })
-            .limit(6);
+            .limit(agentData.max_memory_messages || 6);
 
-        if (historyError) throw historyError;
+        // Formateamos para Python (invertimos el orden para que sea cronológico)
+        const formattedHistory = pastMessages 
+            ? pastMessages.reverse().map(m => ({
+                role: m.sender_type === 'USER' ? 'user' : 'assistant',
+                content: m.content
+              }))
+            : [];
 
-        const formattedHistory = rawHistory.reverse().map(msg => ({
-            role: msg.sender_type === 'USER' ? 'user' : 'assistant',
-            content: msg.content
-        }));
-
-        // 3. Auditoría del nuevo mensaje del USUARIO
-        await supabase.from('messages').insert([{
-            session_chat_id: sessionId,
-            content: prompt,
-            sender_type: 'USER'
-        }]);
-
-        // ==========================================
-        // 🏗️ INYECCIÓN MULTI-TENANT (Abstracción SaaS)
-        // ==========================================
-        // En la versión final, esto vendrá de una consulta a tu tabla 'companies' o 'tenants'
+        // 4. LLAMADA AL MOTOR DE IA (Cloud a Cloud)
+        const finalSystemPrompt = `${agentData.agent_templates.base_system_prompt}\n\n[INSTRUCCIONES ESPECÍFICAS]:\n${agentData.custom_instructions}`;
         
-        const tenantConfig = {
-            erp_url: "http://92.113.39.10:3001/articulos" // La URL del cliente actual
-        };
-
-        const systemPrompt = `Eres el Agente X, encargado de la Bodega. Eres directo y analítico.
-Tienes acceso a consultar productos en tiempo real.
-REGLA CRÍTICA: NUNCA confíes en la información de productos que esté en el historial de la conversación.
-Los precios y descripciones cambian constantemente. SIEMPRE debes ejecutar tu herramienta para verificar el estado actual del producto, incluso si el usuario te pregunta por el mismo producto dos veces seguidas.`;
-
-        // Le decimos a Python qué herramientas tiene permitidas este cliente
-        const allowedTools = ['consultar_inventario_erp']; 
-
-        // 4. Delegación al Motor Python (El Trabajador Agnóstico)
-        const PYTHON_URL = process.env.PYTHON_ENGINE_URL;
-        const pythonResponse = await fetch(`${PYTHON_URL}/api/ia/process`, {
+        const pythonResponse = await fetch(`${process.env.PYTHON_ENGINE_URL}/api/ia/process`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 user_id: userId,
                 pregunta: prompt,
                 history: formattedHistory,
-                // 👉 AQUÍ VIAJA EL NUEVO CONTRATO PARA QUE PYTHON NO DE ERROR 422
-                system_prompt: systemPrompt,
-                allowed_tools: allowedTools,
-                tenant_config: tenantConfig
+                system_prompt: finalSystemPrompt,
+                allowed_tools: agentData.agent_templates.allowed_tools,
+                tenant_config: { erp_url: agentData.companies.erp_base_url },
+                temperature: parseFloat(agentData.temperature)
             })
         });
 
-        // 🛡️ Manejo de errores si Python rebota la petición
-        if (!pythonResponse.ok) {
-            const errorDetalle = await pythonResponse.text();
-            console.error(`Error del Motor Python (${pythonResponse.status}):`, errorDetalle);
-            throw new Error(`Fallo en el motor de IA: ${pythonResponse.status}`);
-        }
-
         const iaData = await pythonResponse.json();
+        if (!pythonResponse.ok) throw new Error(iaData.error || "Falla en el motor Python");
+
         const iaText = iaData.respuesta;
+        const promptTokens = iaData.prompt_tokens || 0;
+        const completionTokens = iaData.completion_tokens || 0;
 
-        // 5. Auditoría de la respuesta de la IA
-        await supabase.from('messages').insert([{
-            session_chat_id: sessionId,
-            content: iaText,
-            sender_type: 'IA'
-        }]);
+        // 5. REGISTRO DOBLE E INMUTABLE (Auditoría B2B)
+        // Guardamos tanto la pregunta como la respuesta en una sola transacción
+        await supabase.from('messages').insert([
+            {
+                session_chat_id: sessionChat.id,
+                content: prompt,
+                sender_type: 'USER',
+                prompt_tokens: 0,
+                completion_tokens: 0
+            },
+            {
+                session_chat_id: sessionChat.id,
+                content: iaText,
+                sender_type: 'IA',
+                prompt_tokens: promptTokens,
+                completion_tokens: completionTokens
+            }
+        ]);
 
-        return res.status(200).json({
-            success: true,
-            respuesta: iaText
-        });
+        return res.status(200).json({ success: true, respuesta: iaText });
 
     } catch (error) {
-        console.error("Fallo crítico en flujo de chat:", error);
-        return res.status(500).json({ error: "Error en procesamiento de memoria o motor de IA." });
+        console.error("CRITICAL ERROR:", error.message);
+        return res.status(500).json({ error: "Error en el pipeline de orquestación." });
     }
 };
 
-module.exports = {
-    sendMessage
-};
+module.exports = { sendMessage };
