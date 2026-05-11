@@ -19,6 +19,8 @@ app.use('/api/auth', require('./routes/auth.routes'));
 // Todo el tráfico del Agente IA va a chat.routes
 app.use('/api/chat', require('./routes/chat.routes'));
 
+app.use('/api/agents', agentRoutes);
+
 app.listen(PORT, () => {
     console.log(`Servidor activo en http://localhost:${PORT} 🚀`);
 });
