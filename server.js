@@ -1,5 +1,6 @@
 // backend/server.js
 const express = require('express');
+const agentRoutes = require('./routes/agent.routes');
 const cors = require('cors');
 require('dotenv').config();
 
