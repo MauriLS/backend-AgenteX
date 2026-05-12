@@ -1,5 +1,6 @@
 // backend/server.js
 const express = require('express');
+const agentRoutes = require('./routes/agent.routes');
 const cors = require('cors');
 require('dotenv').config();
 
@@ -18,6 +19,8 @@ app.use('/api/auth', require('./routes/auth.routes'));
 
 // Todo el tráfico del Agente IA va a chat.routes
 app.use('/api/chat', require('./routes/chat.routes'));
+
+app.use('/api/agents', agentRoutes);
 
 app.listen(PORT, () => {
     console.log(`Servidor activo en http://localhost:${PORT} 🚀`);
