@@ -1,115 +1,82 @@
+// backend/controllers/chat.controller.js
 const supabase = require('../config/supabase');
 
-const sendMessage = async (req, res) => {
+const processChatMessage = async (req, res) => {
     try {
-        const userId = req.user.id;
-        const { prompt, agentTemplateId } = req.body;
+        const { message, agent_id, history = [] } = req.body;
+        const companyId = req.user.company_id; // Inyectado por el middleware verifyToken
 
-        if (!agentTemplateId) {
-            return res.status(400).json({ error: "Falla de protocolo: agentTemplateId es requerido." });
+        if (!message || !agent_id) {
+            return res.status(400).json({ error: "Faltan parámetros: message y agent_id son obligatorios." });
         }
 
-        // 1. OBTENER IDENTIDAD Y CONFIGURACIÓN DEL AGENTE (Single Join)
-        const { data: agentData, error: agentError } = await supabase
+        // 1. EXTRACCIÓN DE CONTEXTO (El JOIN Relacional)
+        const { data: config, error: dbError } = await supabase
             .from('company_agents')
             .select(`
-                id,
+                custom_instructions, 
                 temperature,
-                custom_instructions,
-                max_memory_messages,
-                companies ( erp_base_url ),
-                agent_templates ( base_system_prompt, allowed_tools )
+                companies ( name, erp_base_url, erp_mapping ) // 🚩 PEDIMOS EL DICCIONARIO A SUPABASE
             `)
+            .eq('company_id', companyId)
+            .eq('agent_template_id', agent_id)
             .eq('is_active', true)
-            .eq('agent_template_id', agentTemplateId)
             .single();
 
-        if (agentError || !agentData) {
-            return res.status(403).json({ error: "Agente no disponible para su organización." });
+        if (dbError || !config) {
+            return res.status(403).json({ error: "Agente no autorizado o inactivo." });
         }
 
-        // 2. GESTIÓN DE SESIÓN (Recuperar o Crear)
-        let { data: sessionChat } = await supabase
-            .from('session_chats')
-            .select('id')
-            .eq('users_id', userId)
-            .eq('company_agent_id', agentData.id)
-            .single();
+        const identityPrompt = `[DIRECTIVA DE SISTEMA]: Trabajas exclusivamente para "${config.companies.name}". No menciones que eres una IA genérica.\n\n${config.custom_instructions}`;
 
-        if (!sessionChat) {
-            const { data: newSession } = await supabase
-                .from('session_chats')
-                .insert([{ users_id: userId, company_agent_id: agentData.id }])
-                .select('id')
-                .single();
-            sessionChat = newSession;
-        }
+        // 2. CONSTRUCCIÓN DEL CONTRATO
+        const pythonPayload = {
+            tenant_id: companyId,
+            user_message: message,
+            system_prompt: identityPrompt,
+            temperature: config.temperature,
+            erp_url: config.companies?.erp_base_url || null,
+            erp_mapping: config.companies?.erp_mapping || null,
+            allowed_tools: agent_id === 'bodega' ? ['consultar_inventario_erp'] : [],
+            history: history 
+        };
 
-        // 3. RECUPERACIÓN DE MEMORIA (Historial Dinámico)
-        const { data: pastMessages } = await supabase
-            .from('messages')
-            .select('content, sender_type')
-            .eq('session_chat_id', sessionChat.id)
-            .order('created_at', { ascending: false })
-            .limit(agentData.max_memory_messages || 6);
-
-        // Formateamos para Python (invertimos el orden para que sea cronológico)
-        const formattedHistory = pastMessages 
-            ? pastMessages.reverse().map(m => ({
-                role: m.sender_type === 'USER' ? 'user' : 'assistant',
-                content: m.content
-              }))
-            : [];
-
-        // 4. LLAMADA AL MOTOR DE IA (Cloud a Cloud)
-        const finalSystemPrompt = `${agentData.agent_templates.base_system_prompt}\n\n[INSTRUCCIONES ESPECÍFICAS]:\n${agentData.custom_instructions}`;
+        // 3. LLAMADA AL MICROSERVICIO DE IA (PYTHON)
+        const PYTHON_URL = process.env.PYTHON_ENGINE_URL || 'http://127.0.0.1:8000/api/ia/process';
         
-        const pythonResponse = await fetch(`${process.env.PYTHON_ENGINE_URL}/api/ia/process`, {
+        const response = await fetch(PYTHON_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                user_id: userId,
-                pregunta: prompt,
-                history: formattedHistory,
-                system_prompt: finalSystemPrompt,
-                allowed_tools: agentData.agent_templates.allowed_tools,
-                tenant_config: { erp_url: agentData.companies.erp_base_url },
-                temperature: parseFloat(agentData.temperature)
-            })
+            body: JSON.stringify(pythonPayload)
         });
 
-        const iaData = await pythonResponse.json();
-        if (!pythonResponse.ok) throw new Error(iaData.error || "Falla en el motor Python");
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Motor IA fuera de servicio (${response.status}): ${errorText}`);
+        }
 
-        const iaText = iaData.respuesta;
-        const promptTokens = iaData.prompt_tokens || 0;
-        const completionTokens = iaData.completion_tokens || 0;
+        const result = await response.json();
 
-        // 5. REGISTRO DOBLE E INMUTABLE (Auditoría B2B)
-        // Guardamos tanto la pregunta como la respuesta en una sola transacción
-        await supabase.from('messages').insert([
-            {
-                session_chat_id: sessionChat.id,
-                content: prompt,
-                sender_type: 'USER',
-                prompt_tokens: 0,
-                completion_tokens: 0
-            },
-            {
-                session_chat_id: sessionChat.id,
-                content: iaText,
-                sender_type: 'IA',
-                prompt_tokens: promptTokens,
-                completion_tokens: completionTokens
+        // 4. RESPUESTA FINAL AL FRONTEND
+        // Aquí podrías guardar el log del chat en Supabase antes de responder
+        return res.status(200).json({
+            success: true,
+            reply: result.reply,
+            tokens: {
+                prompt: result.prompt_tokens,
+                completion: result.completion_tokens
             }
-        ]);
-
-        return res.status(200).json({ success: true, respuesta: iaText });
+        });
 
     } catch (error) {
-        console.error("CRITICAL ERROR:", error.message);
-        return res.status(500).json({ error: "Error en el pipeline de orquestación." });
+        console.error("Fallo crítico en Chat Controller:", error.message);
+        return res.status(500).json({ 
+            error: "El motor de inteligencia no pudo procesar la solicitud.",
+            details: error.message 
+        });
     }
 };
 
-module.exports = { sendMessage };
+module.exports = {
+    processChatMessage
+};

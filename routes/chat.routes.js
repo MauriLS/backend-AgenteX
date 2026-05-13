@@ -7,6 +7,7 @@ const chatController = require('../controllers/chat.controller');
 const verifyToken = require('../middlewares/auth');
 
 // Ruta protegida: Solo pasa si el token es válido
-router.post('/message', verifyToken, chatController.sendMessage);
+router.post('/message', verifyToken, chatController.processChatMessage);
+
 
 module.exports = router;
