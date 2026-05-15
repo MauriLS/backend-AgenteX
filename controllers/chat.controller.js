@@ -96,14 +96,38 @@ function formatearProductos(productos, meta, erpMapping) {
         precio:    erpMapping?.precio    || 'precio_tienda',
         stock:     erpMapping?.stock     || 'stock_min',
         categoria: erpMapping?.categoria || 'categoria',
+        // stock_url no se usa aquí (ya fue usado en erpSearch), pero
+        // lo dejamos documentado para claridad del mapeo completo.
     };
 
     if (meta?.error) {
         return `[DATOS ERP]\nERROR DE CONEXIÓN: ${meta.error}\nInforma al usuario que el inventario no está disponible.`;
     }
 
-    if (meta?.total !== undefined) {
-        return `[DATOS ERP]\nEl inventario contiene ${meta.total} artículos en total.`;
+    // Conteo filtrado: el usuario preguntó "cuántos" de un término específico
+    if (meta?.es_conteo) {
+        return `[DATOS ERP]\nConteo para "${meta.termino_usado}": ${meta.total_encontrados} producto(s) encontrados en inventario.\nInforma este número al usuario y pregúntale si quiere ver el detalle o filtrar por medida/modelo específico.`;
+    }
+
+    // Demasiados resultados: la búsqueda es muy amplia.
+    // BLOQUEO TOTAL: el LLM no recibe ningún producto.
+    // Tiene PROHIBIDO inventar una lista. Solo puede pedir refinamiento.
+    if (meta?.demasiados) {
+        return [
+            `[DATOS ERP — BLOQUEO TOTAL ACTIVO]`,
+            `Resultado de búsqueda: ${meta.total_encontrados} productos para "${meta.termino_usado}".`,
+            ``,
+            `⛔ INSTRUCCIÓN IRREVOCABLE — NIVEL 0 ACTIVO:`,
+            `- TIENES PROHIBIDO mostrar productos, IDs, precios o stocks.`,
+            `- TIENES PROHIBIDO inventar una tabla o lista parcial.`,
+            `- TIENES PROHIBIDO decir "los más relevantes son..." o similar.`,
+            `- Tu ÚNICA respuesta permitida es pedir refinamiento al usuario.`,
+            ``,
+            `Texto exacto que debes usar (puedes adaptarlo a tu tono):`,
+            `"Encontré ${meta.total_encontrados} productos para '${meta.termino_usado}'. `,
+            `La lista es demasiado amplia para mostrarte el detalle. `,
+            `¿Puedes especificar medida exacta, modelo, marca o rango de precio?"`,
+        ].join('\n');
     }
 
     if (productos.length === 0) {
@@ -119,7 +143,14 @@ function formatearProductos(productos, meta, erpMapping) {
 
     const lineas = productos.map(p => {
         const cat = p[K.categoria] ? `[${p[K.categoria]}] ` : '';
-        return `- ${cat}${p[K.nombre]} (ID: ${p[K.id]}) | Precio: $${p[K.precio]} | Stock: ${p[K.stock]}`;
+        // Usa _stock_real (del join con asignacion-det) si está disponible.
+        // Si es null significa que el endpoint de stock no respondió o ese
+        // artículo no tiene registro — se muestra explícitamente para que
+        // el LLM no invente un valor.
+        const stockMostrar = (p._stock_real !== null && p._stock_real !== undefined)
+            ? p._stock_real
+            : (p[K.stock] !== undefined ? `${p[K.stock]} (alerta mínima)` : 'No disponible');
+        return `- ${cat}${p[K.nombre]} (ID: ${p[K.id]}) | Precio: $${p[K.precio]} | Stock: ${stockMostrar}`;
     }).join('\n');
 
     return `[DATOS ERP — FUENTE ÚNICA DE VERDAD]\n${avisoRelajado}Encontrados: ${productos.length} producto(s) para "${meta?.termino_usado}":\n${lineas}\n\nORDEN ABSOLUTA: Solo puedes mencionar los productos listados arriba. No agregues datos que no estén en esta lista.`;
@@ -173,15 +204,16 @@ const processChatMessage = async (req, res) => {
         let metaERP    = {};
 
         if (tieneERP) {
+            // ── Extracción de intención ──────────────────────────────────────
+            // Siempre extraemos la intención del mensaje actual.
+            // Si el resultado anterior fue "demasiados" y el nuevo mensaje
+            // parece un refinamiento (medida, modelo, marca), combinamos
+            // el término anterior + el nuevo para construir una búsqueda precisa.
             try {
                 intencion = await extraerIntencion(message, empresa.business_context);
                 console.log(`🧠 Intención → termino: "${intencion.termino}" | filtro: "${intencion.filtro}"`);
             } catch (err) {
                 // ── FALLBACK LOCAL SIN LLM ───────────────────────────────────
-                // El extractor falló (401, timeout, JSON inválido).
-                // En vez de usar el mensaje crudo completo, extraemos el primer
-                // sustantivo real filtrando stop words y palabras cortas.
-                // Esto evita que "quiero saber mi stock en neumaticos" → "quiero".
                 console.warn('⚠️  Extractor LLM falló, usando extracción local:', err.message);
                 const STOP_LOCAL = new Set([
                     'de','para','el','la','los','las','con','sin','en','un','una',
@@ -198,6 +230,82 @@ const processChatMessage = async (req, res) => {
                     filtro:  'busqueda_general',
                 };
                 console.log(`🔧 Extracción local → termino: "${intencion.termino}"`);
+            }
+
+            // ── Combinación de contexto conversacional ───────────────────────
+            // Si el turno anterior terminó en "demasiados" Y el mensaje actual
+            // es un refinamiento corto (medida, número, modelo), combinamos
+            // el término anterior con el actual para precisar la búsqueda.
+            //
+            // Ejemplo:
+            //   Turno anterior: "neumatico 29" → demasiados (42 resultados)
+            //   Mensaje actual: "2.10"
+            //   Término combinado: "neumatico 29 2.10"
+            //
+            // Condiciones para combinar:
+            //   1. El historial tiene al menos 2 mensajes (user + assistant)
+            //   2. El término extraído actual es corto (≤ 2 tokens)
+            //   3. El término extraído actual NO está ya contenido en el anterior
+            // ─────────────────────────────────────────────────────────────────
+            // ── Combinación de contexto SOLO si el asistente pidió refinamiento ──
+            // Condición estricta: el último mensaje del ASISTENTE en el historial
+            // debe contener una frase que indique que pidió al usuario que refinara.
+            // Esto evita combinar términos de preguntas completamente independientes.
+            //
+            // Ejemplo válido:
+            //   Asistente: "Encontré 42 productos... ¿puedes especificar medida?"
+            //   Usuario:   "2.10"   → combinar con término anterior
+            //
+            // Ejemplo inválido:
+            //   Asistente: (muestra tabla de neumáticos 29x2.10)
+            //   Usuario:   "camara" → NO combinar, es pregunta nueva
+            const FRASES_PEDIR_REFINAMIENTO = [
+                'especif', 'filtrar', 'medida exacta', 'modelo', 'marca',
+                'rango de precio', 'demasiado amplia', 'necesito que me',
+                'puedes especificar', 'puedes filtrar',
+            ];
+
+            const ultimoAsistente = [...trimmedHistory]
+                .reverse()
+                .find(m => m.role === 'assistant');
+
+            const asistentePidioRefinamiento = ultimoAsistente &&
+                FRASES_PEDIR_REFINAMIENTO.some(frase =>
+                    ultimoAsistente.content.toLowerCase().includes(frase)
+                );
+
+            if (asistentePidioRefinamiento && trimmedHistory.length >= 2) {
+                const penultimoUser = [...trimmedHistory]
+                    .reverse()
+                    .find(m => m.role === 'user' && m.content.trim() !== message.trim());
+
+                if (penultimoUser) {
+                    try {
+                        const intencionAnterior = await extraerIntencion(
+                            penultimoUser.content,
+                            empresa.business_context
+                        );
+                        const terminoAnterior = intencionAnterior.termino;
+                        const terminoActual   = intencion.termino;
+                        const tokensActuales  = terminoActual.trim().split(/\s+/);
+
+                        // Solo combinar si el nuevo término es corto (≤ 2 tokens)
+                        // y no está ya contenido en el anterior
+                        const esRefinamiento = tokensActuales.length <= 2 &&
+                            !terminoAnterior.includes(terminoActual);
+
+                        if (esRefinamiento) {
+                            const terminoCombinado = `${terminoAnterior} ${terminoActual}`.trim();
+                            console.log(`🔗 Refinamiento detectado: "${terminoAnterior}" + "${terminoActual}" → "${terminoCombinado}"`);
+                            intencion = {
+                                termino: terminoCombinado,
+                                filtro:  'busqueda_general',
+                            };
+                        }
+                    } catch (err) {
+                        console.warn('⚠️  Extracción de contexto anterior falló:', err.message);
+                    }
+                }
             }
 
             // ─────────────────────────────────────────────────────────────────

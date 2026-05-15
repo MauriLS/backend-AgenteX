@@ -10,41 +10,87 @@
 //   3. Fuzzy match con distancia Levenshtein (tolerancia a errores de tipeo)
 //   4. Caché en memoria por tenant con TTL de 60 segundos
 //   5. Feedback loop: si no hay resultados, reintenta con término relajado
+//   6. Join con endpoint de stock real (asignacion-det) via Promise.all
 
 'use strict';
 
 const { removeStopWords, normalize, levenshtein } = require('./textUtils.service');
 
 // =============================================================================
-// CACHÉ EN MEMORIA (por tenant, TTL 60s)
+// CACHÉ EN MEMORIA (por URL, TTL 60s)
+// Cada endpoint se cachea independientemente.
+// La clave incluye la URL completa para garantizar aislamiento entre tenants.
 // =============================================================================
 const erpCache = new Map();
 const CACHE_TTL_MS = 60_000;
 
-async function fetchERP(erpUrl) {
+async function fetchURL(url) {
     const now = Date.now();
-    const cacheKey = erpUrl;
 
-    if (erpCache.has(cacheKey)) {
-        const cached = erpCache.get(cacheKey);
+    if (erpCache.has(url)) {
+        const cached = erpCache.get(url);
         if (now - cached.timestamp < CACHE_TTL_MS) {
-            console.log(`📦 ERP cache hit → ${erpUrl}`);
+            console.log(`📦 Cache hit → ${url}`);
             return cached.data;
         }
     }
 
-    console.log(`🌐 ERP fetch → ${erpUrl}`);
-    const response = await fetch(erpUrl, {
+    console.log(`🌐 Fetch → ${url}`);
+    const response = await fetch(url, {
         signal: AbortSignal.timeout(15_000),
     });
 
     if (!response.ok) {
-        throw new Error(`ERP respondió ${response.status}`);
+        throw new Error(`ERP respondió ${response.status} para ${url}`);
     }
 
     const data = await response.json();
-    erpCache.set(cacheKey, { timestamp: now, data });
+    erpCache.set(url, { timestamp: now, data });
     return data;
+}
+
+// =============================================================================
+// JOIN EN MEMORIA: articulos + stock real
+//
+// Hace ambos fetches en paralelo (Promise.all) y cruza por id_articulo.
+// Si el endpoint de stock falla, devuelve los artículos con stock = null
+// para que el LLM informe que el stock no está disponible en lugar de
+// mostrar el stock_min falso.
+//
+// El campo stock_url viene de companies.erp_mapping.stock_url (nuevo campo).
+// Si no está configurado, se omite el join y se usa el campo stock del mapeo.
+// =============================================================================
+async function fetchArticulosConStock(erpUrl, stockUrl, K) {
+    // Fetch paralelo — no esperamos uno para empezar el otro
+    const [articulos, stockData] = await Promise.all([
+        fetchURL(erpUrl),
+        stockUrl ? fetchURL(stockUrl).catch(err => {
+            console.warn(`⚠️  Stock endpoint falló, se mostrará stock no disponible: ${err.message}`);
+            return null;
+        }) : Promise.resolve(null),
+    ]);
+
+    if (!Array.isArray(articulos)) {
+        throw new Error('El ERP no devolvió un array de productos.');
+    }
+
+    // Si no hay endpoint de stock, devolvemos artículos sin modificar
+    if (!stockData || !Array.isArray(stockData)) {
+        console.warn('⚠️  Sin datos de stock real. Se omite el campo stock.');
+        return articulos.map(art => ({ ...art, _stock_real: null }));
+    }
+
+    // Construimos un Map id_articulo → stock_real para join O(1)
+    const stockMap = new Map(
+        stockData.map(s => [String(s.id_articulo), s.stock_real ?? null])
+    );
+
+    // Enriquecemos cada artículo con su stock real
+    return articulos.map(art => {
+        const artId      = String(art[K.id] || '');
+        const stockReal  = stockMap.has(artId) ? stockMap.get(artId) : null;
+        return { ...art, _stock_real: stockReal };
+    });
 }
 
 // =============================================================================
@@ -58,7 +104,8 @@ async function fetchERP(erpUrl) {
  * @param {string}  params.termino        - Término extraído de la intención del usuario
  * @param {string}  params.filtro         - "busqueda_general" | "mayor_valor" | "menor_valor" | "stock_mayor" | "stock_critico" | "conteo_total"
  * @param {string}  params.erpUrl         - URL base del ERP de la empresa (GET libre, sin auth)
- * @param {object}  params.erpMapping     - Diccionario de claves { id, sku, nombre, precio, stock, categoria }
+ * @param {object}  params.erpMapping     - Diccionario de claves { id, sku, nombre, precio, stock, categoria, stock_url }
+ *                                          stock_url: URL del endpoint de stock real (asignacion-det)
  * @returns {object} { productos, meta }
  */
 async function buscarEnERP({ termino, filtro, erpUrl, erpMapping }) {
@@ -69,33 +116,19 @@ async function buscarEnERP({ termino, filtro, erpUrl, erpMapping }) {
         sku:       erpMapping?.sku       || 'sku',
         nombre:    erpMapping?.nombre    || 'articulo',
         precio:    erpMapping?.precio    || 'precio_tienda',
-        stock:     erpMapping?.stock     || 'stock_min',
+        stock:     erpMapping?.stock     || 'stock_min',  // fallback si no hay stock_url
         categoria: erpMapping?.categoria || 'categoria',
+        stock_url: erpMapping?.stock_url || null,         // URL del endpoint de stock real
     };
 
-    // ── Fetch con caché ───────────────────────────────────────────────────────
+    // ── Fetch paralelo: artículos + stock real (con join en memoria) ──────────
     let articulos;
     try {
-        articulos = await fetchERP(erpUrl);
+        articulos = await fetchArticulosConStock(erpUrl, K.stock_url, K);
     } catch (err) {
         return {
             productos: [],
             meta: { error: `No se pudo conectar al ERP: ${err.message}`, termino_usado: termino }
-        };
-    }
-
-    if (!Array.isArray(articulos)) {
-        return {
-            productos: [],
-            meta: { error: 'El ERP no devolvió un array de productos.', termino_usado: termino }
-        };
-    }
-
-    // ── Conteo total (bypass rápido) ──────────────────────────────────────────
-    if (filtro === 'conteo_total') {
-        return {
-            productos: [],
-            meta: { total: articulos.length, termino_usado: termino }
         };
     }
 
@@ -107,11 +140,48 @@ async function buscarEnERP({ termino, filtro, erpUrl, erpMapping }) {
     let terminoUsado = termino;
 
     for (const t of terminosAIntentar) {
-        resultados = filtrarArticulos(articulos, t, filtro, K);
+        // conteo_total usa busqueda_general internamente para filtrar primero
+        const filtroReal = filtro === 'conteo_total' ? 'busqueda_general' : filtro;
+        resultados = filtrarArticulos(articulos, t, filtroReal, K);
         if (resultados.length > 0) {
             terminoUsado = t;
             break;
         }
+    }
+
+    // ── Umbral de fricción ────────────────────────────────────────────────────
+    // Si hay más de UMBRAL resultados, no los mandamos todos al LLM.
+    // Le devolvemos el conteo real y le pedimos que refine la búsqueda.
+    // Esto evita que el LLM invente o corte arbitrariamente la lista.
+    //
+    // Excepción: stock_critico siempre muestra todos (son los urgentes).
+    // Excepción: conteo_total siempre muestra el conteo sin productos.
+    const UMBRAL = 15;
+
+    if (filtro === 'conteo_total') {
+        return {
+            productos: [],
+            meta: {
+                es_conteo:        true,
+                total_encontrados: resultados.length,
+                termino_usado:    terminoUsado,
+                termino_original: termino,
+                fue_relajado:     terminoUsado !== termino,
+            }
+        };
+    }
+
+    if (filtro !== 'stock_critico' && resultados.length > UMBRAL) {
+        return {
+            productos: [],
+            meta: {
+                demasiados:        true,
+                total_encontrados: resultados.length,
+                termino_usado:     terminoUsado,
+                termino_original:  termino,
+                fue_relajado:      terminoUsado !== termino,
+            }
+        };
     }
 
     // ── Ordenamiento según filtro ─────────────────────────────────────────────
@@ -162,15 +232,23 @@ function filtrarArticulos(articulos, termino, filtro, K) {
 
         if (!matchTexto) return false;
 
-        // Match numérico: al menos un token numérico debe estar (OR)
-        if (tokensNum.length > 0) {
-            const matchNum = tokensNum.some(t => valNombre.includes(t));
-            if (!matchNum) return false;
+        // Match numérico:
+        //   - 1 token numérico  → OR  (ej. "29" puede ser aro 29, 29cc, etc.)
+        //   - 2+ tokens numéricos → AND (ej. "29 2.10" es medida compuesta,
+        //     deben estar AMBOS en el nombre para evitar 166 resultados falsos)
+        if (tokensNum.length === 1) {
+            if (!valNombre.includes(tokensNum[0])) return false;
+        } else if (tokensNum.length > 1) {
+            if (!tokensNum.every(t => valNombre.includes(t))) return false;
         }
 
         // Filtro de stock crítico (≤ 3 unidades)
+        // Usa _stock_real si está disponible, sino cae al campo del mapeo
         if (filtro === 'stock_critico') {
-            return parseFloat(art[K.stock] || 0) <= 3;
+            const stockVal = art._stock_real !== null && art._stock_real !== undefined
+                ? art._stock_real
+                : parseFloat(art[K.stock] || 0);
+            return stockVal <= 3;
         }
 
         return true;
@@ -184,15 +262,25 @@ function ordenar(resultados, filtro, K) {
     const r = [...resultados];
     switch (filtro) {
         case 'mayor_valor':
-            return r.sort((a, b) => parseFloat(b[K.precio] || 0) - parseFloat(a[K.precio] || 0)).slice(0, 10);
+            // Ordena por precio desc. El umbral ya garantiza ≤ 15 resultados.
+            return r.sort((a, b) => parseFloat(b[K.precio] || 0) - parseFloat(a[K.precio] || 0));
         case 'menor_valor':
-            return r.sort((a, b) => parseFloat(a[K.precio] || 0) - parseFloat(b[K.precio] || 0)).slice(0, 10);
+            return r.sort((a, b) => parseFloat(a[K.precio] || 0) - parseFloat(b[K.precio] || 0));
         case 'stock_mayor':
-            return r.sort((a, b) => parseFloat(b[K.stock] || 0) - parseFloat(a[K.stock] || 0)).slice(0, 10);
+            return r.sort((a, b) => {
+                const sa = a._stock_real ?? parseFloat(a[K.stock] || 0);
+                const sb = b._stock_real ?? parseFloat(b[K.stock] || 0);
+                return sb - sa;
+            });
         case 'stock_critico':
-            return r.sort((a, b) => parseFloat(a[K.stock] || 0) - parseFloat(b[K.stock] || 0));
+            // stock_critico muestra todos sin límite (son los urgentes)
+            return r.sort((a, b) => {
+                const sa = a._stock_real ?? parseFloat(a[K.stock] || 0);
+                const sb = b._stock_real ?? parseFloat(b[K.stock] || 0);
+                return sa - sb;
+            });
         default:
-            return r; // busqueda_general: sin orden especial
+            return r;
     }
 }
 
@@ -235,9 +323,11 @@ function buildTerminosFallback(termino) {
 
 // =============================================================================
 // INVALIDAR CACHÉ MANUALMENTE (útil si el ERP actualiza inventario)
+// Acepta la URL de artículos y opcionalmente la de stock.
 // =============================================================================
-function invalidarCache(erpUrl) {
+function invalidarCache(erpUrl, stockUrl = null) {
     erpCache.delete(erpUrl);
+    if (stockUrl) erpCache.delete(stockUrl);
 }
 
 module.exports = { buscarEnERP, invalidarCache };
