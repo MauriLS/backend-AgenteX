@@ -158,28 +158,31 @@ async function buscarEnERP({ termino, filtro, erpUrl, erpMapping }) {
     }
 
     // ── Umbral de fricción ────────────────────────────────────────────────────
-    // Si hay más de UMBRAL resultados, no los mandamos todos al LLM.
-    // Le devolvemos el conteo real y le pedimos que refine la búsqueda.
-    // Esto evita que el LLM invente o corte arbitrariamente la lista.
+    // Si hay más de UMBRAL resultados, devolvemos el conteo y pedimos refinar.
     //
-    // Excepción: stock_critico siempre muestra todos (son los urgentes).
-    // Excepción: conteo_total siempre muestra el conteo sin productos.
+    // EXCEPCIONES — filtros que nunca activan el umbral porque ya limitan solos:
+    //   - mayor_valor / menor_valor / stock_mayor: el ordenamiento devuelve top N
+    //   - stock_critico: siempre mostramos todos (son los urgentes)
+    //   - conteo_total: devuelve conteo, no lista
     const UMBRAL = 15;
+    const FILTROS_SIN_UMBRAL = new Set([
+        'mayor_valor', 'menor_valor', 'stock_mayor', 'stock_critico'
+    ]);
 
     if (filtro === 'conteo_total') {
         return {
             productos: [],
             meta: {
-                es_conteo:        true,
+                es_conteo:         true,
                 total_encontrados: resultados.length,
-                termino_usado:    terminoUsado,
-                termino_original: termino,
-                fue_relajado:     terminoUsado !== termino,
+                termino_usado:     terminoUsado,
+                termino_original:  termino,
+                fue_relajado:      terminoUsado !== termino,
             }
         };
     }
 
-    if (filtro !== 'stock_critico' && resultados.length > UMBRAL) {
+    if (!FILTROS_SIN_UMBRAL.has(filtro) && resultados.length > UMBRAL) {
         return {
             productos: [],
             meta: {
