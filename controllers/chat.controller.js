@@ -35,6 +35,17 @@ REGLAS DE EXTRACCIÓN:
   Para dimensiones: ELIMINA la letra "x". Ej: "29 x 2.10" → "29 2.10"
   Si el usuario referencia una búsqueda anterior ("de los que encontraste", "el más caro de esos"),
   extrae el término implícito del contexto.
+  REGLA CRÍTICA: Si el usuario pregunta por extremos de TODO el inventario sin especificar
+  categoría ("el más caro", "el más barato", "el de mayor stock", "el producto más caro",
+  "qué artículo tiene más stock"), usa "ALL" como termino.
+  Ejemplos:
+  - "cual es el producto más caro" → {"termino":"ALL","filtro":"mayor_valor"}
+  - "qué artículo tengo con más stock" → {"termino":"ALL","filtro":"stock_mayor"}
+  - "el más barato del inventario" → {"termino":"ALL","filtro":"menor_valor"}
+  - "cuántos productos tengo en total" → {"termino":"ALL","filtro":"conteo_total"}
+  Solo usa un término específico cuando el usuario acota por categoría:
+  - "el neumático más caro" → {"termino":"neumatico","filtro":"mayor_valor"}
+  - "la cámara más barata" → {"termino":"camara","filtro":"menor_valor"}
 - "filtro": Uno de estos valores exactos:
     "busqueda_general"  → búsqueda normal
     "mayor_valor"       → el/los más caro(s)

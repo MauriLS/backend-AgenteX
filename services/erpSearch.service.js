@@ -133,19 +133,27 @@ async function buscarEnERP({ termino, filtro, erpUrl, erpMapping }) {
     }
 
     // ── Búsqueda con intentos (feedback loop) ────────────────────────────────
-    // Intento 1: término completo
-    // Intento 2: si falla, solo el primer token (término relajado)
-    const terminosAIntentar = buildTerminosFallback(termino);
+    // Caso especial: termino "ALL" → usar todos los artículos sin filtrar.
+    // Se usa cuando el usuario pregunta por el más caro/barato/mayor stock
+    // de TODO el inventario sin especificar categoría.
     let resultados = [];
     let terminoUsado = termino;
 
-    for (const t of terminosAIntentar) {
-        // conteo_total usa busqueda_general internamente para filtrar primero
-        const filtroReal = filtro === 'conteo_total' ? 'busqueda_general' : filtro;
-        resultados = filtrarArticulos(articulos, t, filtroReal, K);
-        if (resultados.length > 0) {
-            terminoUsado = t;
-            break;
+    if (termino === 'ALL') {
+        resultados  = [...articulos];
+        terminoUsado = 'ALL';
+    } else {
+        // Intento 1: término completo
+        // Intento 2: si falla, solo el primer token (término relajado)
+        const terminosAIntentar = buildTerminosFallback(termino);
+
+        for (const t of terminosAIntentar) {
+            const filtroReal = filtro === 'conteo_total' ? 'busqueda_general' : filtro;
+            resultados = filtrarArticulos(articulos, t, filtroReal, K);
+            if (resultados.length > 0) {
+                terminoUsado = t;
+                break;
+            }
         }
     }
 
