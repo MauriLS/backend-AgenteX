@@ -80,9 +80,15 @@ async function fetchArticulosConStock(erpUrl, stockUrl, K) {
         return articulos.map(art => ({ ...art, _stock_real: null }));
     }
 
-    // Construimos un Map id_articulo → stock_real para join O(1)
+    // Claves del join — vienen del mapping configurado por la empresa
+    // stock_join_id:  clave del endpoint secundario que se cruza con el ID del artículo
+    // stock_real_key: clave que contiene el valor de stock real
+    const joinKey     = K.stock_join_id  || 'id_articulo';
+    const stockValKey = K.stock_real_key || 'stock_real';
+
+    // Construimos un Map para join O(1)
     const stockMap = new Map(
-        stockData.map(s => [String(s.id_articulo), s.stock_real ?? null])
+        stockData.map(s => [String(s[joinKey] ?? ''), s[stockValKey] ?? null])
     );
 
     // Enriquecemos cada artículo con su stock real
@@ -118,7 +124,9 @@ async function buscarEnERP({ termino, filtro, erpUrl, erpMapping }) {
         precio:    erpMapping?.precio    || 'precio_tienda',
         stock:     erpMapping?.stock     || 'stock_min',  // fallback si no hay stock_url
         categoria: erpMapping?.categoria || 'categoria',
-        stock_url: erpMapping?.stock_url || null,         // URL del endpoint de stock real
+        stock_url:     erpMapping?.stock_url     || null,  // URL del endpoint secundario
+        stock_join_id: erpMapping?.stock_join_id || null,  // Clave de cruce en el endpoint secundario
+        stock_real_key: erpMapping?.stock_real_key || null, // Clave del valor de stock real
     };
 
     // ── Fetch paralelo: artículos + stock real (con join en memoria) ──────────

@@ -12,9 +12,10 @@
 
 'use strict';
 
-const supabase          = require('../config/supabase');
-const { buscarEnERP }   = require('../services/erpSearch.service');
-const { normalize }     = require('../services/textUtils.service');
+const supabase                                          = require('../config/supabase');
+const { buscarEnERP }                                   = require('../services/erpSearch.service');
+const { consultarAnalitica, formatearAnaliticsParaLLM } = require('../services/analytics.service');
+const { normalize }                                     = require('../services/textUtils.service');
 
 const DEEPSEEK_API_URL = 'https://api.deepseek.com/v1/chat/completions';
 const PYTHON_URL       = process.env.PYTHON_ENGINE_URL || 'http://127.0.0.1:8000/api/ia/process';
@@ -24,35 +25,73 @@ const PYTHON_URL       = process.env.PYTHON_ENGINE_URL || 'http://127.0.0.1:8000
 // LLM auxiliar a temperatura 0. Solo responde un JSON de dos campos.
 // Sin historial, sin personalidad, sin tools. ~40 tokens de costo.
 // =============================================================================
-async function extraerIntencion(mensajeUsuario, businessContext) {
+async function extraerIntencion(mensajeUsuario, businessContext, motor = "erp_search", dimensiones = null) {
     const systemExtractor = `\
 Eres un extractor de intención para un motor de búsqueda de inventario.
 Tu única tarea es leer el mensaje del usuario y responder EXCLUSIVAMENTE con un JSON válido.
 No escribas nada más. Sin explicaciones, sin markdown, sin texto adicional.
 
 REGLAS DE EXTRACCIÓN:
-- "termino": El sustantivo técnico principal. ELIMINA preposiciones y palabras genéricas del rubro.
+- "termino": Depende del motor:
+
+  Si motor es "erp_search": sustantivo técnico principal + modificadores.
+  ELIMINA artículos, preposiciones, verbos conversacionales.
   Para dimensiones: ELIMINA la letra "x". Ej: "29 x 2.10" → "29 2.10"
-  Si el usuario referencia una búsqueda anterior ("de los que encontraste", "el más caro de esos"),
-  extrae el término implícito del contexto.
-  REGLA CRÍTICA: Si el usuario pregunta por extremos de TODO el inventario sin especificar
-  categoría ("el más caro", "el más barato", "el de mayor stock", "el producto más caro",
-  "qué artículo tiene más stock"), usa "ALL" como termino.
+
+  Si motor es "analytics": incluye el período o dimensión mencionada.
   Ejemplos:
+  - "ventas de diciembre" → "diciembre"
+  - "ingresos del mes" → "mes"
+  - "rendimiento por técnico este año" → "tecnico año"
+  - "qué comuna vendió más" → "ALL"
+  - "resumen general" → "ALL"
+  El término debe contener palabras que ayuden a detectar el período o dimensión.
+
+  EJEMPLOS DE EXTRACCIÓN CORRECTA:
+  - "stock de triciclos electricos" → "triciclo electrico"   (NO solo "triciclo")
+  - "quiero ver bicicletas de montaña" → "bicicleta montana" (NO solo "bicicleta")
+  - "camaras para aro 29" → "camara 29"                     (mantiene la medida)
+  - "neumaticos mtb 29 x 2.10" → "neumatico mtb 29 2.10"    (mantiene tipo y medida)
+  - "triciclos de carga eléctricos" → "triciclo carga electrico"
+
+  REGLA CRÍTICA — motor erp_search:
+  Si el usuario pregunta por extremos de TODO el inventario sin categoría, usa "ALL".
   - "cual es el producto más caro" → {"termino":"ALL","filtro":"mayor_valor"}
-  - "qué artículo tengo con más stock" → {"termino":"ALL","filtro":"stock_mayor"}
   - "el más barato del inventario" → {"termino":"ALL","filtro":"menor_valor"}
   - "cuántos productos tengo en total" → {"termino":"ALL","filtro":"conteo_total"}
-  Solo usa un término específico cuando el usuario acota por categoría:
+  Solo usa término específico cuando el usuario acota por categoría:
   - "el neumático más caro" → {"termino":"neumatico","filtro":"mayor_valor"}
-  - "la cámara más barata" → {"termino":"camara","filtro":"menor_valor"}
-- "filtro": Uno de estos valores exactos:
-    "busqueda_general"  → búsqueda normal
+
+  REGLA CRÍTICA — motor analytics:
+  Para consultas analíticas sin dimensión específica, usa "ALL".
+  Para consultas con período o dimensión, inclúyela en el término.
+  - "ventas totales de diciembre" → {"termino":"diciembre","filtro":"resumen"}
+  - "ingresos por técnico" → {"termino":"ALL","filtro":"por_tecnico"}
+  - "qué comuna tuvo más ingresos" → {"termino":"ALL","filtro":"por_comuna"}
+  - "rendimiento por tipo de servicio" → {"termino":"ALL","filtro":"por_tipo"}
+  - "resumen general del negocio" → {"termino":"ALL","filtro":"resumen"}
+  - "técnico más rentable del año" → {"termino":"año","filtro":"mayor_valor"}
+  - "cuántas instalaciones tenemos" → {"termino":"ALL","filtro":"conteo_total"}
+- "filtro": Uno de estos valores exactos, según el tipo de agente:
+
+  Si motor es "erp_search" (bodega/ventas):
+    "busqueda_general"  → búsqueda normal de producto
     "mayor_valor"       → el/los más caro(s)
     "menor_valor"       → el/los más barato(s)
     "stock_mayor"       → el/los con más stock
     "stock_critico"     → productos con stock bajo (≤ 3 unidades)
     "conteo_total"      → cuántos productos hay en total
+
+  Si motor es "analytics" (analítica):
+    "resumen"           → totales generales: ingresos, costos, margen, cantidad
+    "por_tecnico"       → desglose por técnico o responsable
+    "por_comuna"        → desglose por comuna, zona o ciudad
+    "por_tipo"          → desglose por tipo o categoría de servicio
+    "mayor_valor"       → ranking o top (técnico más rentable, etc.)
+    "conteo_total"      → cuántos registros hay en total
+
+  Motor actual: ${motor}
+  ${dimensiones ? `Dimensiones agrupables para esta empresa: ${dimensiones}. Usa filtro "por_NOMBRE" para cualquiera de ellas.` : ""}
 
 CONTEXTO DEL RUBRO:
 ${businessContext || 'Sin contexto disponible.'}
@@ -189,7 +228,7 @@ const processChatMessage = async (req, res) => {
                 custom_instructions,
                 temperature,
                 max_memory_messages,
-                agent_templates ( base_system_prompt, allowed_tools ),
+                agent_templates ( base_system_prompt, allowed_tools, motor ),
                 companies ( name, erp_base_url, erp_mapping, business_context )
             `)
             .eq('company_id', companyId)
@@ -206,6 +245,8 @@ const processChatMessage = async (req, res) => {
         const maxMemory      = config.max_memory_messages ?? 6;
         const trimmedHistory = history.slice(-(maxMemory));
         const tieneERP       = !!empresa.erp_base_url;
+        // Motor viene de BD — nunca hardcodeado por agent_id
+        const motor          = config.agent_templates?.motor || 'erp_search';
 
         // ─────────────────────────────────────────────────────────────────────
         // 2. EXTRACCIÓN DE INTENCIÓN (solo si hay ERP configurado)
@@ -216,12 +257,12 @@ const processChatMessage = async (req, res) => {
 
         if (tieneERP) {
             // ── Extracción de intención ──────────────────────────────────────
-            // Siempre extraemos la intención del mensaje actual.
-            // Si el resultado anterior fue "demasiados" y el nuevo mensaje
-            // parece un refinamiento (medida, modelo, marca), combinamos
-            // el término anterior + el nuevo para construir una búsqueda precisa.
+            // Para motor analytics: se salta — consultarAnalitica recibe el
+            // mensaje completo y extrae el rango con su propio LLM auxiliar.
+            // Para erp_search: extrae término y filtro para la búsqueda léxica.
+            if (motor !== 'analytics') {
             try {
-                intencion = await extraerIntencion(message, empresa.business_context);
+                intencion = await extraerIntencion(message, empresa.business_context, motor);
                 console.log(`🧠 Intención → termino: "${intencion.termino}" | filtro: "${intencion.filtro}"`);
             } catch (err) {
                 // ── FALLBACK LOCAL SIN LLM ───────────────────────────────────
@@ -242,34 +283,11 @@ const processChatMessage = async (req, res) => {
                 };
                 console.log(`🔧 Extracción local → termino: "${intencion.termino}"`);
             }
+            } // fin if motor !== analytics
 
-            // ── Combinación de contexto conversacional ───────────────────────
-            // Si el turno anterior terminó en "demasiados" Y el mensaje actual
-            // es un refinamiento corto (medida, número, modelo), combinamos
-            // el término anterior con el actual para precisar la búsqueda.
-            //
-            // Ejemplo:
-            //   Turno anterior: "neumatico 29" → demasiados (42 resultados)
-            //   Mensaje actual: "2.10"
-            //   Término combinado: "neumatico 29 2.10"
-            //
-            // Condiciones para combinar:
-            //   1. El historial tiene al menos 2 mensajes (user + assistant)
-            //   2. El término extraído actual es corto (≤ 2 tokens)
-            //   3. El término extraído actual NO está ya contenido en el anterior
-            // ─────────────────────────────────────────────────────────────────
-            // ── Combinación de contexto SOLO si el asistente pidió refinamiento ──
-            // Condición estricta: el último mensaje del ASISTENTE en el historial
-            // debe contener una frase que indique que pidió al usuario que refinara.
-            // Esto evita combinar términos de preguntas completamente independientes.
-            //
-            // Ejemplo válido:
-            //   Asistente: "Encontré 42 productos... ¿puedes especificar medida?"
-            //   Usuario:   "2.10"   → combinar con término anterior
-            //
-            // Ejemplo inválido:
-            //   Asistente: (muestra tabla de neumáticos 29x2.10)
-            //   Usuario:   "camara" → NO combinar, es pregunta nueva
+            // ── Combinación de contexto (solo para erp_search) ─────────────
+            // Analytics no necesita esto — el LLM auxiliar maneja el contexto temporal.
+            if (motor !== 'analytics') {
             const FRASES_PEDIR_REFINAMIENTO = [
                 'especif', 'filtrar', 'medida exacta', 'modelo', 'marca',
                 'rango de precio', 'demasiado amplia', 'necesito que me',
@@ -318,24 +336,44 @@ const processChatMessage = async (req, res) => {
                     }
                 }
             }
+            } // fin if motor !== analytics
 
             // ─────────────────────────────────────────────────────────────────
-            // 3. BÚSQUEDA DETERMINÍSTICA EN ERP
-            //    Caché 60s + fuzzy Levenshtein + feedback loop automático
+            // 3. ROUTER DE MOTORES — cada agente usa su propio motor
             // ─────────────────────────────────────────────────────────────────
-            try {
-                const resultado = await buscarEnERP({
-                    termino:    intencion.termino,
-                    filtro:     intencion.filtro,
-                    erpUrl:     empresa.erp_base_url,
-                    erpMapping: empresa.erp_mapping,
-                });
-                productos = resultado.productos;
-                metaERP   = resultado.meta;
-                console.log(`📦 ERP → ${productos.length} resultados | meta:`, metaERP);
-            } catch (err) {
-                console.error('🚨 Búsqueda ERP falló:', err.message);
-                metaERP = { error: err.message };
+            if (motor === 'analytics') {
+                // Motor analítico: fetch + filtro temporal mínimo.
+                // Node.js solo filtra por fecha si el usuario menciona un período.
+                // El LLM recibe los registros y hace todo el análisis semántico.
+                try {
+                    const resultado = await consultarAnalitica({
+                        mensaje:    message,
+                        erpUrl:     empresa.erp_base_url,
+                        erpMapping: empresa.erp_mapping,
+                    });
+                    metaERP  = { ...resultado.meta, _analytics_registros: resultado.registros, _analytics_agregado: resultado.agregado };
+                    productos = [];
+                    console.log(`📊 Analítica → modo: ${resultado.meta?.modo} | enviados: ${resultado.meta?.filtrados}`);
+                } catch (err) {
+                    console.error('🚨 Motor analítico falló:', err.message);
+                    metaERP = { error: err.message };
+                }
+            } else {
+                // Motor de bodega (default): búsqueda léxica de productos
+                try {
+                    const resultado = await buscarEnERP({
+                        termino:    intencion.termino,
+                        filtro:     intencion.filtro,
+                        erpUrl:     empresa.erp_base_url,
+                        erpMapping: empresa.erp_mapping,
+                    });
+                    productos = resultado.productos;
+                    metaERP   = resultado.meta;
+                    console.log(`📦 ERP → ${productos.length} resultados | meta:`, metaERP);
+                } catch (err) {
+                    console.error('🚨 Búsqueda ERP falló:', err.message);
+                    metaERP = { error: err.message };
+                }
             }
         }
 
@@ -380,8 +418,21 @@ ${config.custom_instructions || ''}
             ? `\n## [NIVEL 3 — RESTRICCIONES GLOBALES]\n${config.agent_templates.base_system_prompt}\n`
             : '';
 
+        let nivel4Contenido = '';
+        if (tieneERP) {
+            if (motor === 'analytics' && (metaERP?._analytics_registros !== undefined || metaERP?._analytics_agregado !== undefined)) {
+                nivel4Contenido = formatearAnaliticsParaLLM(
+                    metaERP._analytics_registros,
+                    metaERP._analytics_agregado,
+                    metaERP,
+                    empresa.erp_mapping
+                );
+            } else {
+                nivel4Contenido = formatearProductos(productos, metaERP, empresa.erp_mapping);
+            }
+        }
         const NIVEL_4 = tieneERP
-            ? `\n## [NIVEL 4 — DATOS DEL INVENTARIO]\n${formatearProductos(productos, metaERP, empresa.erp_mapping)}\n`
+            ? `\n## [NIVEL 4 — DATOS OPERACIONALES]\n${nivel4Contenido}\n`
             : '';
 
         const systemPrompt = [NIVEL_0, NIVEL_1, NIVEL_2, NIVEL_3, NIVEL_4].join('\n');
