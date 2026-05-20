@@ -15,6 +15,7 @@
 const supabase                                          = require('../config/supabase');
 const { buscarEnERP }                                   = require('../services/erpSearch.service');
 const { consultarAnalitica, formatearAnaliticsParaLLM } = require('../services/analytics.service');
+const { buscarParaVentas, formatearVentasParaLLM }      = require('../services/salesSearch.service');
 const { normalize }                                     = require('../services/textUtils.service');
 
 const DEEPSEEK_API_URL = 'https://api.deepseek.com/v1/chat/completions';
@@ -358,6 +359,52 @@ const processChatMessage = async (req, res) => {
                     console.error('🚨 Motor analítico falló:', err.message);
                     metaERP = { error: err.message };
                 }
+            } else if (motor === 'ventas') {
+                // Motor de ventas: catálogo + cliente + historial en paralelo.
+                // Si el mensaje solo menciona un cliente sin producto específico,
+                // no buscamos en el ERP todavía — evita resultados vacíos o irrelevantes.
+                const terminoVentas = intencion.termino === 'all' ? '' : intencion.termino;
+
+                // Recuperar candidatos previos del historial si el turno anterior fue ambiguo
+                const candidatosPrevios = (() => {
+                    const ultimoAsistente = [...trimmedHistory].reverse().find(m => m.role === 'assistant');
+                    if (!ultimoAsistente) return null;
+                    // El controller guarda los candidatos en el erp_mapping temporal _candidatos_previos
+                    // Alternativamente los detectamos del mensaje del asistente
+                    if (ultimoAsistente.content?.includes('¿A cuál de estos') ||
+                        ultimoAsistente.content?.includes('cuál es el cliente correcto') ||
+                        ultimoAsistente.content?.includes('podrían coincidir')) {
+                        return empresa.erp_mapping?._candidatos_previos || null;
+                    }
+                    return null;
+                })();
+
+                try {
+                    const resultado = await buscarParaVentas({
+                        mensaje:                message,
+                        termino:                terminoVentas,
+                        filtro:                 intencion.filtro,
+                        erpUrl:                 empresa.erp_base_url,
+                        erpMapping: {
+                            ...empresa.erp_mapping,
+                            _candidatos_previos: candidatosPrevios,
+                        },
+                        historialConversacion:  trimmedHistory,
+                    });
+                    productos = resultado.productos;
+                    metaERP   = {
+                        ...resultado.metaProductos,
+                        _identificacion:     resultado.identificacion,
+                        _perfil_cliente:     resultado.perfilCliente,
+                        _total_clientes:     resultado.totalClientes,
+                        // Guardamos candidatos para el próximo turno si hay ambigüedad
+                        _candidatos_previos: resultado.candidatos,
+                    };
+                } catch (err) {
+                    console.error('🚨 Motor ventas falló:', err.message);
+                    metaERP = { error: err.message };
+                }
+
             } else {
                 // Motor de bodega (default): búsqueda léxica de productos
                 try {
@@ -425,6 +472,14 @@ ${config.custom_instructions || ''}
                     metaERP._analytics_registros,
                     metaERP._analytics_agregado,
                     metaERP,
+                    empresa.erp_mapping
+                );
+            } else if (motor === 'ventas') {
+                nivel4Contenido = formatearVentasParaLLM(
+                    productos,
+                    metaERP,
+                    metaERP?._identificacion || { estado: 'no_encontrado' },
+                    metaERP?._perfil_cliente || null,
                     empresa.erp_mapping
                 );
             } else {
