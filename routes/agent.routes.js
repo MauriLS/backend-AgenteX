@@ -1,12 +1,18 @@
-const express = require('express');
-const router = express.Router();
-const { getMyAgents } = require('../controllers/agent.controller');
-
-// Importa tu middleware de seguridad (ajusta la ruta según tu proyecto)
+// backend/routes/agent.routes.js
+const router      = require('express').Router();
 const verifyToken = require('../middlewares/auth');
-console.log("Tipo de verifyToken:", typeof verifyToken);
-console.log("Tipo de getMyAgents:", typeof getMyAgents);
-// Ruta protegida: GET /api/agents/my-agents
-router.get('/my-agents', verifyToken, getMyAgents);
+const {
+    getMyAgents,
+    getTemplates,
+    getAgents,
+    updateAgent,
+    deleteAgent,
+} = require('../controllers/agent.controller');
+
+router.get('/my-agents',   verifyToken, getMyAgents);
+router.get('/templates',   verifyToken, getTemplates);
+router.get('/',            verifyToken, getAgents);
+router.put('/:id',         verifyToken, updateAgent);
+router.delete('/:id',      verifyToken, deleteAgent);
 
 module.exports = router;
