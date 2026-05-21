@@ -63,4 +63,74 @@ const deleteSession = async (req, res) => {
     res.json({ success: true, message: 'Sesión eliminada.' });
 };
 
-module.exports = { getSessions, getSessionMessages, deleteSession };
+// GET /api/sessions/stats
+// Métricas por agente: sesiones, preguntas, tokens prompt/completion
+const getStats = async (req, res) => {
+    const { data: sessions, error: sessErr } = await supabase
+        .from('session_chats')
+        .select('id, company_agents ( agent_template_id, agent_templates ( name ) )')
+        .eq('users_id', req.user.id);
+
+    if (sessErr) return res.status(500).json({ error: sessErr.message });
+    if (!sessions.length) return res.json({ success: true, stats: [] });
+
+    const sessionIds = sessions.map(s => s.id);
+
+    const { data: messages, error: msgErr } = await supabase
+        .from('messages')
+        .select('session_chat_id, sender_type, prompt_tokens, completion_tokens')
+        .in('session_chat_id', sessionIds);
+
+    if (msgErr) return res.status(500).json({ error: msgErr.message });
+
+    // Mapa session_id → agente
+    const sessionAgente = {};
+    for (const s of sessions) {
+        sessionAgente[s.id] = {
+            templateId: s.company_agents?.agent_template_id || 'desconocido',
+            name:       s.company_agents?.agent_templates?.name || 'Agente',
+        };
+    }
+
+    // Agregar métricas por agente
+    const porAgente = {};
+    const sesionesUnicas = {};
+
+    for (const s of sessions) {
+        const key = sessionAgente[s.id]?.templateId;
+        if (!key) continue;
+        if (!porAgente[key]) {
+            porAgente[key] = {
+                agent_id:          key,
+                agent_name:        sessionAgente[s.id].name,
+                total_sesiones:    0,
+                total_preguntas:   0,
+                prompt_tokens:     0,
+                completion_tokens: 0,
+            };
+            sesionesUnicas[key] = new Set();
+        }
+        sesionesUnicas[key].add(s.id);
+    }
+
+    for (const msg of messages) {
+        const key = sessionAgente[msg.session_chat_id]?.templateId;
+        if (!key || !porAgente[key]) continue;
+        porAgente[key].prompt_tokens     += msg.prompt_tokens     || 0;
+        porAgente[key].completion_tokens += msg.completion_tokens || 0;
+        if (msg.sender_type === 'USER') porAgente[key].total_preguntas++;
+    }
+
+    for (const key of Object.keys(porAgente)) {
+        porAgente[key].total_sesiones = sesionesUnicas[key]?.size || 0;
+    }
+
+    const stats = Object.values(porAgente).map(a => ({
+        ...a,
+        total_tokens: a.prompt_tokens + a.completion_tokens,
+    }));
+
+    res.json({ success: true, stats });
+};
+
+module.exports = { getSessions, getSessionMessages, deleteSession, getStats };
