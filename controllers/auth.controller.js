@@ -32,10 +32,14 @@ const registerB2B = async (req, res) => {
         // ── 1. Crear la Empresa ───────────────────────────────────────────────
         // erp_mapping y business_context son opcionales — si vienen null/undefined
         // Supabase los guarda como null, lo que es válido (el sistema usa fallbacks).
+        // erp_url se guarda en erp_mapping.productos_url — erp_base_url está deprecado
+        const mappingConUrl = erp_url
+            ? { ...(erp_mapping || {}), productos_url: erp_url }
+            : (erp_mapping || null);
+
         const companyInsert = {
             name:             company_name,
-            erp_base_url:     erp_url         || null,
-            erp_mapping:      erp_mapping      || null,
+            erp_mapping:      mappingConUrl,
             business_context: business_context || null,
         };
 

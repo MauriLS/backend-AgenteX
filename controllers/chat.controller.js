@@ -16,6 +16,7 @@ const supabase                                          = require('../config/sup
 const { buscarEnERP }                                   = require('../services/erpSearch.service');
 const { consultarAnalitica, formatearAnaliticsParaLLM } = require('../services/analytics.service');
 const { buscarParaVentas, formatearVentasParaLLM }      = require('../services/salesSearch.service');
+const { consultarLogistica, formatearLogisticaParaLLM } = require('../services/logisticsSearch.service');
 const { normalize }                                     = require('../services/textUtils.service');
 
 const DEEPSEEK_API_URL = 'https://api.deepseek.com/v1/chat/completions';
@@ -245,7 +246,7 @@ const processChatMessage = async (req, res) => {
         const empresa        = config.companies || {};
         const maxMemory      = config.max_memory_messages ?? 6;
         const trimmedHistory = history.slice(-(maxMemory));
-        const tieneERP       = !!empresa.erp_base_url;
+        const tieneERP       = !!empresa.erp_mapping?.productos_url;
         // Motor viene de BD — nunca hardcodeado por agent_id
         const motor          = config.agent_templates?.motor || 'erp_search';
 
@@ -349,7 +350,7 @@ const processChatMessage = async (req, res) => {
                 try {
                     const resultado = await consultarAnalitica({
                         mensaje:    message,
-                        erpUrl:     empresa.erp_base_url,
+                        erpUrl:     empresa.erp_mapping?.productos_url,
                         erpMapping: empresa.erp_mapping,
                     });
                     metaERP  = { ...resultado.meta, _analytics_registros: resultado.registros, _analytics_agregado: resultado.agregado };
@@ -384,7 +385,7 @@ const processChatMessage = async (req, res) => {
                         mensaje:                message,
                         termino:                terminoVentas,
                         filtro:                 intencion.filtro,
-                        erpUrl:                 empresa.erp_base_url,
+                        erpUrl:                 empresa.erp_mapping?.productos_url,
                         erpMapping: {
                             ...empresa.erp_mapping,
                             _candidatos_previos: candidatosPrevios,
@@ -405,13 +406,36 @@ const processChatMessage = async (req, res) => {
                     metaERP = { error: err.message };
                 }
 
+            } else if (motor === 'logistica') {
+                // Motor de logística: órdenes de trabajo y despachos.
+                // La URL viene de erp_mapping.ordenes_url — no del erp_base_url
+                // que pertenece al catálogo de productos/analítica.
+                const ordenesUrl = empresa.erp_mapping?.ordenes_url || empresa.erp_mapping?.productos_url;
+                try {
+                    const resultado = await consultarLogistica({
+                        mensaje:    message,
+                        erpUrl:     ordenesUrl,
+                        erpMapping: empresa.erp_mapping,
+                    });
+                    productos = [];
+                    metaERP   = {
+                        _logistica_ordenes:  resultado.ordenes,
+                        _logistica_agregado: resultado.agregado,
+                        ...resultado.meta,
+                    };
+                    console.log(`📋 Logística → modo: ${resultado.meta?.modo} | órdenes: ${resultado.meta?.filtradas}`);
+                } catch (err) {
+                    console.error('🚨 Motor logística falló:', err.message);
+                    metaERP = { error: err.message };
+                }
+
             } else {
                 // Motor de bodega (default): búsqueda léxica de productos
                 try {
                     const resultado = await buscarEnERP({
                         termino:    intencion.termino,
                         filtro:     intencion.filtro,
-                        erpUrl:     empresa.erp_base_url,
+                        erpUrl:     empresa.erp_mapping?.productos_url,
                         erpMapping: empresa.erp_mapping,
                     });
                     productos = resultado.productos;
@@ -471,6 +495,13 @@ ${config.custom_instructions || ''}
                 nivel4Contenido = formatearAnaliticsParaLLM(
                     metaERP._analytics_registros,
                     metaERP._analytics_agregado,
+                    metaERP,
+                    empresa.erp_mapping
+                );
+            } else if (motor === 'logistica') {
+                nivel4Contenido = formatearLogisticaParaLLM(
+                    metaERP?._logistica_ordenes  || null,
+                    metaERP?._logistica_agregado || null,
                     metaERP,
                     empresa.erp_mapping
                 );
