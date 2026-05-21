@@ -14,7 +14,7 @@
 
 'use strict';
 
-const { removeStopWords, normalize, levenshtein } = require('./textUtils.service');
+const { removeStopWords, normalize, levenshtein } = require('./text-utils.service');
 
 // =============================================================================
 // CACHÉ EN MEMORIA (por URL, TTL 60s)

@@ -10,8 +10,8 @@
 
 'use strict';
 
-const { buscarEnERP }          = require('./erpSearch.service');
-const { normalize, levenshtein } = require('./textUtils.service');
+const { buscarEnERP }          = require('./erp-search.service');
+const { normalize, levenshtein } = require('./text-utils.service');
 
 // =============================================================================
 // CACHÉ EN MEMORIA (TTL 60s)

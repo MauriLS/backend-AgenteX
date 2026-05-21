@@ -13,11 +13,11 @@
 'use strict';
 
 const supabase                                          = require('../config/supabase');
-const { buscarEnERP }                                   = require('../services/erpSearch.service');
+const { buscarEnERP }                                   = require('../services/erp-search.service');
 const { consultarAnalitica, formatearAnaliticsParaLLM } = require('../services/analytics.service');
-const { buscarParaVentas, formatearVentasParaLLM }      = require('../services/salesSearch.service');
-const { consultarLogistica, formatearLogisticaParaLLM } = require('../services/logisticsSearch.service');
-const { normalize }                                     = require('../services/textUtils.service');
+const { buscarParaVentas, formatearVentasParaLLM }      = require('../services/sales-search.service');
+const { consultarLogistica, formatearLogisticaParaLLM } = require('../services/logistics-search.service');
+const { normalize }                                     = require('../services/text-utils.service');
 
 const DEEPSEEK_API_URL = 'https://api.deepseek.com/v1/chat/completions';
 const PYTHON_URL       = process.env.PYTHON_ENGINE_URL || 'http://127.0.0.1:8000/api/ia/process';
