@@ -10,12 +10,13 @@ app.use(cors());
 app.use(express.json());
 
 // ── Rutas ─────────────────────────────────────────────────────────────────────
-app.use('/api/auth',     require('./routes/auth.routes'));
-app.use('/api/chat',     require('./routes/chat.routes'));
-app.use('/api/agents',   require('./routes/agent.routes'));
-app.use('/api/users',    require('./routes/users.routes'));
-app.use('/api/sessions', require('./routes/sessions.routes'));
-app.use('/api/company',  require('./routes/company.routes'));
+app.use('/api/auth',            require('./routes/auth.routes'));
+app.use('/api/chat',            require('./routes/chat.routes'));
+app.use('/api/agents',          require('./routes/agent.routes'));
+app.use('/api/users',           require('./routes/users.routes'));
+app.use('/api/sessions',        require('./routes/sessions.routes'));
+app.use('/api/company',         require('./routes/company.routes'));
+app.use('/api/admin/companies', require('./routes/admin.routes'));
 
 // Health check para Render (evita sleep en plan gratuito)
 app.get('/health', (_, res) => res.json({ status: 'ok' }));
