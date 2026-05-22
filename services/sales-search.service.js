@@ -19,12 +19,13 @@ const { normalize, levenshtein } = require('./text-utils.service');
 const salesCache = new Map();
 const CACHE_TTL_MS = 60_000;
 
-async function fetchURL(url) {
+async function fetchURL(url, companyId) {
+    const cacheKey = `${companyId}:${url}`;
     const now = Date.now();
-    if (salesCache.has(url)) {
-        const cached = salesCache.get(url);
+    if (salesCache.has(cacheKey)) {
+        const cached = salesCache.get(cacheKey);
         if (now - cached.timestamp < CACHE_TTL_MS) {
-            console.log(`📦 Sales cache hit → ${url}`);
+            console.log(`📦 Sales cache hit → ${cacheKey}`);
             return cached.data;
         }
     }
@@ -32,7 +33,7 @@ async function fetchURL(url) {
     const response = await fetch(url, { signal: AbortSignal.timeout(15_000) });
     if (!response.ok) throw new Error(`Endpoint respondió ${response.status} para ${url}`);
     const data = await response.json();
-    salesCache.set(url, { timestamp: now, data });
+    salesCache.set(cacheKey, { timestamp: now, data });
     return data;
 }
 
@@ -138,7 +139,7 @@ async function fetchPerfilCompleto(clientes, historial, clienteId) {
 // =============================================================================
 // FUNCIÓN PRINCIPAL
 // =============================================================================
-async function buscarParaVentas({ mensaje, termino, filtro, erpUrl, erpMapping, historialConversacion = [] }) {
+async function buscarParaVentas({ mensaje, termino, filtro, erpUrl, erpMapping, historialConversacion = [], companyId }) {
     const clientesUrl        = erpMapping?.clientes_url      || null;
     const historialUrl       = erpMapping?.historial_url     || null;
     const clienteIdCampo     = erpMapping?.cliente_id_campo  || 'rut';
@@ -154,14 +155,14 @@ async function buscarParaVentas({ mensaje, termino, filtro, erpUrl, erpMapping, 
             : Promise.resolve({ productos: [], meta: {} }),
 
         clientesUrl
-            ? fetchURL(clientesUrl).catch(err => {
+            ? fetchURL(clientesUrl, companyId || 'default').catch(err => {
                 console.warn('⚠️  Clientes endpoint falló:', err.message);
                 return [];
             })
             : Promise.resolve([]),
 
         historialUrl
-            ? fetchURL(historialUrl).catch(err => {
+            ? fetchURL(historialUrl, companyId || 'default').catch(err => {
                 console.warn('⚠️  Historial endpoint falló:', err.message);
                 return [];
             })
