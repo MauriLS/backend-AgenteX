@@ -383,6 +383,7 @@ const processChatMessage = async (req, res) => {
                         mensaje:    message,
                         erpUrl:     empresa.erp_mapping?.productos_url,
                         erpMapping: empresa.erp_mapping,
+                        companyId,
                     });
                     metaERP  = { ...resultado.meta, _analytics_registros: resultado.registros, _analytics_agregado: resultado.agregado };
                     productos = [];
@@ -422,6 +423,7 @@ const processChatMessage = async (req, res) => {
                             _candidatos_previos: candidatosPrevios,
                         },
                         historialConversacion:  trimmedHistory,
+                        companyId,
                     });
                     productos = resultado.productos;
                     metaERP   = {
@@ -447,6 +449,7 @@ const processChatMessage = async (req, res) => {
                         mensaje:    message,
                         erpUrl:     ordenesUrl,
                         erpMapping: empresa.erp_mapping,
+                        companyId,
                     });
                     productos = [];
                     metaERP   = {
@@ -468,6 +471,7 @@ const processChatMessage = async (req, res) => {
                         filtro:     intencion.filtro,
                         erpUrl:     empresa.erp_mapping?.productos_url,
                         erpMapping: empresa.erp_mapping,
+                        companyId,
                     });
                     productos = resultado.productos;
                     metaERP   = resultado.meta;

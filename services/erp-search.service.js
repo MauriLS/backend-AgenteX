@@ -24,13 +24,14 @@ const { removeStopWords, normalize, levenshtein } = require('./text-utils.servic
 const erpCache = new Map();
 const CACHE_TTL_MS = 60_000;
 
-async function fetchURL(url) {
+async function fetchURL(url, companyId) {
+    const cacheKey = `${companyId || 'default'}:${url}`;
     const now = Date.now();
 
-    if (erpCache.has(url)) {
-        const cached = erpCache.get(url);
+    if (erpCache.has(cacheKey)) {
+        const cached = erpCache.get(cacheKey);
         if (now - cached.timestamp < CACHE_TTL_MS) {
-            console.log(`📦 Cache hit → ${url}`);
+            console.log(`📦 Cache hit → ${cacheKey}`);
             return cached.data;
         }
     }
@@ -45,7 +46,7 @@ async function fetchURL(url) {
     }
 
     const data = await response.json();
-    erpCache.set(url, { timestamp: now, data });
+    erpCache.set(cacheKey, { timestamp: now, data });
     return data;
 }
 
@@ -60,11 +61,11 @@ async function fetchURL(url) {
 // El campo stock_url viene de companies.erp_mapping.stock_url (nuevo campo).
 // Si no está configurado, se omite el join y se usa el campo stock del mapeo.
 // =============================================================================
-async function fetchArticulosConStock(erpUrl, stockUrl, K) {
+async function fetchArticulosConStock(erpUrl, stockUrl, K, companyId) {
     // Fetch paralelo — no esperamos uno para empezar el otro
     const [articulos, stockData] = await Promise.all([
-        fetchURL(erpUrl),
-        stockUrl ? fetchURL(stockUrl).catch(err => {
+        fetchURL(erpUrl, companyId),
+        stockUrl ? fetchURL(stockUrl, companyId).catch(err => {
             console.warn(`⚠️  Stock endpoint falló, se mostrará stock no disponible: ${err.message}`);
             return null;
         }) : Promise.resolve(null),
@@ -114,7 +115,7 @@ async function fetchArticulosConStock(erpUrl, stockUrl, K) {
  *                                          stock_url: URL del endpoint de stock real (asignacion-det)
  * @returns {object} { productos, meta }
  */
-async function buscarEnERP({ termino, filtro, erpUrl, erpMapping }) {
+async function buscarEnERP({ termino, filtro, erpUrl, erpMapping, companyId }) {
 
     // ── Claves del mapeo (agnóstico al tenant) ────────────────────────────────
     const K = {
@@ -132,7 +133,7 @@ async function buscarEnERP({ termino, filtro, erpUrl, erpMapping }) {
     // ── Fetch paralelo: artículos + stock real (con join en memoria) ──────────
     let articulos;
     try {
-        articulos = await fetchArticulosConStock(erpUrl, K.stock_url, K);
+        articulos = await fetchArticulosConStock(erpUrl, K.stock_url, K, companyId);
     } catch (err) {
         return {
             productos: [],
