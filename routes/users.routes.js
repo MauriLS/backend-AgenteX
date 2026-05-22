@@ -5,7 +5,7 @@ const { getMe, updateMe, getUsers, deleteUser } = require('../controllers/users.
 
 router.get('/',       verifyToken, getUsers);
 router.get('/me',     verifyToken, getMe);
-router.put('/me',     verifyToken, updateMe);
+router.patch('/me',     verifyToken, updateMe);
 router.delete('/:id', verifyToken, deleteUser);
 
 module.exports = router;

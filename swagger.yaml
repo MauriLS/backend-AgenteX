@@ -410,9 +410,9 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
 
   /api/agents/{id}:
-    put:
+    patch:
       tags: [Agentes]
-      summary: Actualizar instrucciones o temperatura de un agente (ADMIN)
+      summary: Actualizar instrucciones o temperatura de un agente — ADMIN (campos parciales)
       parameters:
         - name: id
           in: path
@@ -483,9 +483,9 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
-    put:
+    patch:
       tags: [Usuarios]
-      summary: Actualizar perfil propio
+      summary: Actualizar perfil propio (campos parciales)
       requestBody:
         content:
           application/json:
@@ -652,9 +652,9 @@ paths:
                   success: { type: boolean }
                   company: { $ref: '#/components/schemas/Company' }
 
-    put:
+    patch:
       tags: [Empresa]
-      summary: Actualizar configuración de la empresa (ADMIN)
+      summary: Actualizar configuración de la empresa — ADMIN (campos parciales)
       requestBody:
         content:
           application/json:
@@ -698,9 +698,9 @@ paths:
           $ref: '#/components/responses/Forbidden'
 
   /api/admin/companies/{id}:
-    put:
+    patch:
       tags: [Admin]
-      summary: Actualizar empresa (SUPER_ADMIN)
+      summary: Actualizar empresa — SUPER_ADMIN (campos parciales)
       parameters:
         - name: id
           in: path

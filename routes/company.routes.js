@@ -4,6 +4,6 @@ const verifyToken = require('../middlewares/auth');
 const { getCompany, updateCompany } = require('../controllers/company.controller');
 
 router.get('/',  verifyToken, getCompany);
-router.put('/',  verifyToken, updateCompany);
+router.patch('/',  verifyToken, updateCompany);
 
 module.exports = router;
