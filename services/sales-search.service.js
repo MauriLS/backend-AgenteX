@@ -19,7 +19,8 @@ const { normalize, levenshtein } = require('./text-utils.service');
 const salesCache = new Map();
 const CACHE_TTL_MS = 60_000;
 
-async function fetchURL(url, companyId) {
+async function fetchURL(url, companyId, erpToken = null) {
+    const headers = erpToken ? { 'Authorization': erpToken } : {};
     const cacheKey = `${companyId}:${url}`;
     const now = Date.now();
     if (salesCache.has(cacheKey)) {
@@ -30,7 +31,7 @@ async function fetchURL(url, companyId) {
         }
     }
     console.log(`🌐 Sales fetch → ${url}`);
-    const response = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+    const response = await fetch(url, { headers, signal: AbortSignal.timeout(15_000) });
     if (!response.ok) throw new Error(`Endpoint respondió ${response.status} para ${url}`);
     const data = await response.json();
     salesCache.set(cacheKey, { timestamp: now, data });

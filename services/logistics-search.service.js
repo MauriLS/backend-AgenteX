@@ -20,7 +20,8 @@ const CACHE_TTL_MS      = 60_000;
 // =============================================================================
 const logisticsCache = new Map();
 
-async function fetchData(url, companyId) {
+async function fetchData(url, companyId, erpToken = null) {
+    const headers = erpToken ? { 'Authorization': erpToken } : {};
     const cacheKey = `${companyId}:${url}`;
     const now = Date.now();
     if (logisticsCache.has(cacheKey)) {
@@ -31,7 +32,7 @@ async function fetchData(url, companyId) {
         }
     }
     console.log(`🌐 Logistics fetch → ${url}`);
-    const response = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+    const response = await fetch(url, { headers, signal: AbortSignal.timeout(15_000) });
     if (!response.ok) throw new Error(`Endpoint respondió ${response.status}`);
     const data = await response.json();
     logisticsCache.set(cacheKey, { timestamp: now, data });
@@ -178,6 +179,7 @@ function preAgregarOrdenes(ordenes, K) {
 // FUNCIÓN PRINCIPAL
 // =============================================================================
 async function consultarLogistica({ mensaje, erpUrl, erpMapping, companyId }) {
+    const erpToken = erpMapping?.erp_token || null;
     const K = {
         id:               erpMapping?.id               || 'id',
         numero:           erpMapping?.numero           || 'numero_orden',
@@ -197,7 +199,7 @@ async function consultarLogistica({ mensaje, erpUrl, erpMapping, companyId }) {
 
     let ordenes;
     try {
-        ordenes = await fetchData(erpUrl, companyId || 'default');
+        ordenes = await fetchData(erpUrl, companyId || 'default', erpToken);
     } catch (err) {
         return { ordenes: null, agregado: null, meta: { error: err.message } };
     }
