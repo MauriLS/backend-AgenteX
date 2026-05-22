@@ -572,7 +572,10 @@ ${config.custom_instructions || ''}
 
         const pyResponse = await fetch(PYTHON_URL, {
             method:  'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type':      'application/json',
+                'X-Internal-Secret': process.env.INTERNAL_SECRET || '',
+            },
             body:    JSON.stringify(pythonPayload),
             signal:  AbortSignal.timeout(45_000),
         });
