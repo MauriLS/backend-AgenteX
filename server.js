@@ -3,11 +3,19 @@ const express = require('express');
 const cors    = require('cors');
 require('dotenv').config();
 
+const { swaggerUi, swaggerDoc } = require('./swagger');
+
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
+
+// Documentación API — disponible en /api/docs
+app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerDoc, {
+    customSiteTitle: 'AgenteX API Docs',
+    customCss: '.swagger-ui .topbar { display: none }',
+}));
 
 // ── Rutas ─────────────────────────────────────────────────────────────────────
 app.use('/api/auth',            require('./routes/auth.routes'));

@@ -1,0 +1,711 @@
+openapi: 3.0.3
+info:
+  title: AgenteX API
+  description: |
+    API multi-tenant para orquestación de agentes IA conectados a ERPs empresariales.
+    
+    ## Autenticación
+    Todas las rutas excepto `/auth/login` y `/auth/register` requieren un Bearer token JWT.
+    Incluye el token en el header: `Authorization: Bearer <token>`
+    
+    ## Roles
+    - `USER` — acceso a chat y datos propios
+    - `ADMIN` — gestión de empresa, agentes y usuarios de su tenant
+    - `SUPER_ADMIN` — gestión de todas las empresas
+  version: 1.0.0
+  contact:
+    name: AgenteX Support
+
+servers:
+  - url: http://localhost:3000
+    description: Desarrollo local
+  - url: https://backend-agentex.onrender.com
+    description: Producción
+
+# ─────────────────────────────────────────────────────────────────────────────
+# COMPONENTES REUTILIZABLES
+# ─────────────────────────────────────────────────────────────────────────────
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          example: Mensaje de error descriptivo
+
+    User:
+      type: object
+      properties:
+        id:         { type: integer, example: 1 }
+        username:   { type: string,  example: admin_empresa }
+        email:      { type: string,  example: admin@empresa.com }
+        role:       { type: string,  enum: [USER, ADMIN, SUPER_ADMIN] }
+        status:     { type: integer, example: 1 }
+        company_id: { type: integer, example: 3 }
+        created_at: { type: string,  format: date-time }
+
+    Company:
+      type: object
+      properties:
+        id:                  { type: integer, example: 3 }
+        name:                { type: string,  example: Zxtreme Logistics }
+        erp_mapping:         { type: object,  example: { productos_url: "https://api.empresa.com/articulos" } }
+        business_context:    { type: string,  example: "Diccionario del rubro..." }
+        subscription_status: { type: string,  enum: [ACTIVE, INACTIVE, SUSPENDED] }
+        created_at:          { type: string,  format: date-time }
+
+    Agent:
+      type: object
+      properties:
+        id:                  { type: integer, example: 13 }
+        agent_template_id:   { type: string,  example: bodega }
+        custom_instructions: { type: string,  example: "Eres el operario de bodega..." }
+        temperature:         { type: number,  example: 0.3 }
+        is_active:           { type: boolean, example: true }
+
+    AgentTemplate:
+      type: object
+      properties:
+        id:            { type: string,  example: bodega }
+        name:          { type: string,  example: Agente de Bodega }
+        motor:         { type: string,  enum: [erp_search, analytics, ventas, logistica] }
+        allowed_tools: { type: array,   items: { type: string } }
+
+    Session:
+      type: object
+      properties:
+        id:         { type: integer, example: 16 }
+        created_at: { type: string,  format: date-time }
+        alerted:    { type: boolean, example: false }
+        seen:       { type: boolean, example: true }
+        company_agents:
+          type: object
+          properties:
+            agent_template_id: { type: string, example: bodega }
+
+    Message:
+      type: object
+      properties:
+        id:                { type: integer, example: 42 }
+        content:           { type: string,  example: "¿Cuál es el stock de neumáticos 29?" }
+        sender_type:       { type: string,  enum: [USER, IA, SYSTEM] }
+        prompt_tokens:     { type: integer, example: 1240 }
+        completion_tokens: { type: integer, example: 380 }
+        created_at:        { type: string,  format: date-time }
+
+    Stats:
+      type: object
+      properties:
+        agent_id:          { type: string,  example: bodega }
+        agent_name:        { type: string,  example: Agente de Bodega }
+        total_sesiones:    { type: integer, example: 12 }
+        total_preguntas:   { type: integer, example: 47 }
+        prompt_tokens:     { type: integer, example: 84230 }
+        completion_tokens: { type: integer, example: 12400 }
+        total_tokens:      { type: integer, example: 96630 }
+
+  responses:
+    Unauthorized:
+      description: Token inválido o ausente
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Sin permisos para esta operación
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Recurso no encontrado
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+security:
+  - bearerAuth: []
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RUTAS
+# ─────────────────────────────────────────────────────────────────────────────
+paths:
+
+  # ── HEALTH ────────────────────────────────────────────────────────────────
+  /health:
+    get:
+      tags: [Sistema]
+      summary: Health check
+      description: Ping para mantener el servicio activo en Render.
+      security: []
+      responses:
+        '200':
+          description: Servicio activo
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+
+  # ── AUTH ──────────────────────────────────────────────────────────────────
+  /api/auth/login:
+    post:
+      tags: [Autenticación]
+      summary: Iniciar sesión
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:    { type: string, example: admin@empresa.com }
+                password: { type: string, example: "mi_contraseña" }
+      responses:
+        '200':
+          description: Login exitoso
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string, example: Login exitoso }
+                  token:   { type: string, example: eyJhbGci... }
+                  user:
+                    type: object
+                    properties:
+                      username: { type: string }
+                      role:     { type: string }
+        '401':
+          description: Credenciales inválidas
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/auth/register:
+    post:
+      tags: [Autenticación]
+      summary: Registrar nueva empresa (ADMIN)
+      description: Aprovisiona una empresa, su usuario admin y sus agentes en una sola operación.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [company_name, email, password, agents_to_provision]
+              properties:
+                company_name:
+                  type: string
+                  example: Mi Empresa SA
+                erp_url:
+                  type: string
+                  example: https://api.empresa.com/productos
+                business_context:
+                  type: string
+                  example: "Diccionario del rubro..."
+                erp_mapping:
+                  type: object
+                  example: { nombre: articulo, precio: precio_tienda }
+                username:
+                  type: string
+                  example: admin_empresa
+                email:
+                  type: string
+                  example: admin@empresa.com
+                password:
+                  type: string
+                  example: contraseña_temporal
+                agents_to_provision:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      template_id:         { type: string,  example: bodega }
+                      temperature:         { type: number,  example: 0.3 }
+                      custom_instructions: { type: string,  example: "Eres el operario..." }
+      responses:
+        '201':
+          description: Empresa desplegada correctamente
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:    { type: boolean }
+                  message:    { type: string }
+                  company_id: { type: integer }
+        '400':
+          description: Faltan parámetros obligatorios
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ── CHAT ──────────────────────────────────────────────────────────────────
+  /api/chat/message:
+    post:
+      tags: [Chat]
+      summary: Enviar mensaje al agente IA
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message, agent_id]
+              properties:
+                message:
+                  type: string
+                  example: "¿Cuál es el stock de neumáticos 29?"
+                agent_id:
+                  type: string
+                  example: bodega
+                history:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      role:    { type: string, enum: [user, assistant] }
+                      content: { type: string }
+                session_chat_id:
+                  type: integer
+                  nullable: true
+                  example: 16
+      responses:
+        '200':
+          description: Respuesta del agente
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:         { type: boolean }
+                  reply:           { type: string }
+                  session_chat_id: { type: integer }
+                  tokens:
+                    type: object
+                    properties:
+                      prompt:     { type: integer }
+                      completion: { type: integer }
+        '400':
+          description: Mensaje vacío o parámetros faltantes
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ── AGENTES ───────────────────────────────────────────────────────────────
+  /api/agents/my-agents:
+    get:
+      tags: [Agentes]
+      summary: Agentes activos del usuario autenticado
+      responses:
+        '200':
+          description: Lista de agentes disponibles para el usuario
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  agents:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        instanceId: { type: integer, example: 13 }
+                        templateId: { type: string,  example: bodega }
+                        name:       { type: string,  example: Agente de Bodega }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/agents/templates:
+    get:
+      tags: [Agentes]
+      summary: Todos los templates de agentes disponibles
+      responses:
+        '200':
+          description: Lista de templates
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:   { type: boolean }
+                  templates:
+                    type: array
+                    items: { $ref: '#/components/schemas/AgentTemplate' }
+
+  /api/agents:
+    get:
+      tags: [Agentes]
+      summary: Agentes de la empresa (ADMIN)
+      responses:
+        '200':
+          description: Lista completa de agentes de la empresa
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  agents:
+                    type: array
+                    items: { $ref: '#/components/schemas/Agent' }
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/agents/{id}:
+    put:
+      tags: [Agentes]
+      summary: Actualizar instrucciones o temperatura de un agente (ADMIN)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                custom_instructions: { type: string }
+                temperature:         { type: number, minimum: 0, maximum: 1 }
+      responses:
+        '200':
+          description: Agente actualizado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  agent:   { $ref: '#/components/schemas/Agent' }
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [Agentes]
+      summary: Desactivar agente — soft delete (ADMIN)
+      description: Pone is_active en false. El historial de sesiones se preserva.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Agente desactivado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  message: { type: string }
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ── USUARIOS ──────────────────────────────────────────────────────────────
+  /api/users/me:
+    get:
+      tags: [Usuarios]
+      summary: Perfil del usuario autenticado
+      responses:
+        '200':
+          description: Datos del usuario
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  user:    { $ref: '#/components/schemas/User' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    put:
+      tags: [Usuarios]
+      summary: Actualizar perfil propio
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username: { type: string, example: nuevo_nombre }
+                email:    { type: string, example: nuevo@email.com }
+                password: { type: string, example: nueva_contraseña }
+      responses:
+        '200':
+          description: Perfil actualizado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  user:    { $ref: '#/components/schemas/User' }
+
+  /api/users:
+    get:
+      tags: [Usuarios]
+      summary: Listar usuarios de la empresa (ADMIN)
+      responses:
+        '200':
+          description: Lista de usuarios
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  users:
+                    type: array
+                    items: { $ref: '#/components/schemas/User' }
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/users/{id}:
+    delete:
+      tags: [Usuarios]
+      summary: Eliminar usuario (ADMIN)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Usuario eliminado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  message: { type: string }
+        '400':
+          description: No puedes eliminar tu propio usuario
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ── SESIONES ──────────────────────────────────────────────────────────────
+  /api/sessions/stats:
+    get:
+      tags: [Sesiones]
+      summary: Estadísticas de uso por agente
+      description: Tokens consumidos, preguntas realizadas y sesiones por agente del usuario autenticado.
+      responses:
+        '200':
+          description: Estadísticas agrupadas por agente
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  stats:
+                    type: array
+                    items: { $ref: '#/components/schemas/Stats' }
+
+  /api/sessions:
+    get:
+      tags: [Sesiones]
+      summary: Historial de conversaciones del usuario
+      responses:
+        '200':
+          description: Lista de sesiones (máx. 50 más recientes)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:  { type: boolean }
+                  sessions:
+                    type: array
+                    items: { $ref: '#/components/schemas/Session' }
+
+  /api/sessions/{id}/messages:
+    get:
+      tags: [Sesiones]
+      summary: Mensajes de una sesión específica
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Mensajes ordenados cronológicamente
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:  { type: boolean }
+                  messages:
+                    type: array
+                    items: { $ref: '#/components/schemas/Message' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/sessions/{id}:
+    delete:
+      tags: [Sesiones]
+      summary: Eliminar sesión y sus mensajes
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Sesión eliminada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  message: { type: string }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ── EMPRESA ───────────────────────────────────────────────────────────────
+  /api/company:
+    get:
+      tags: [Empresa]
+      summary: Datos de la empresa del usuario autenticado
+      responses:
+        '200':
+          description: Datos de la empresa
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  company: { $ref: '#/components/schemas/Company' }
+
+    put:
+      tags: [Empresa]
+      summary: Actualizar configuración de la empresa (ADMIN)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:             { type: string }
+                erp_mapping:      { type: object }
+                business_context: { type: string }
+      responses:
+        '200':
+          description: Empresa actualizada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  company: { $ref: '#/components/schemas/Company' }
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ── ADMIN ─────────────────────────────────────────────────────────────────
+  /api/admin/companies:
+    get:
+      tags: [Admin]
+      summary: Listar todas las empresas (SUPER_ADMIN)
+      responses:
+        '200':
+          description: Lista de todas las empresas
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:   { type: boolean }
+                  companies:
+                    type: array
+                    items: { $ref: '#/components/schemas/Company' }
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/admin/companies/{id}:
+    put:
+      tags: [Admin]
+      summary: Actualizar empresa (SUPER_ADMIN)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:                { type: string }
+                erp_mapping:         { type: object }
+                business_context:    { type: string }
+                subscription_status: { type: string, enum: [ACTIVE, INACTIVE, SUSPENDED] }
+      responses:
+        '200':
+          description: Empresa actualizada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  company: { $ref: '#/components/schemas/Company' }
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+    delete:
+      tags: [Admin]
+      summary: Eliminar empresa y todo su contenido en cascada (SUPER_ADMIN)
+      description: |
+        **Operación irreversible.** Elimina la empresa y en cascada:
+        usuarios, agentes, sesiones y mensajes asociados.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Empresa eliminada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  message: { type: string }
+        '403':
+          $ref: '#/components/responses/Forbidden'
