@@ -13,11 +13,11 @@
 'use strict';
 
 const supabase                                          = require('../config/supabase');
-const { buscarEnERP }                                   = require('../services/erp-search.service');
+const { buscarEnERP }                                   = require('../services/erpSearch.service');
 const { consultarAnalitica, formatearAnaliticsParaLLM } = require('../services/analytics.service');
-const { buscarParaVentas, formatearVentasParaLLM }      = require('../services/sales-search.service');
-const { consultarLogistica, formatearLogisticaParaLLM } = require('../services/logistics-search.service');
-const { normalize }                                     = require('../services/text-utils.service');
+const { buscarParaVentas, formatearVentasParaLLM }      = require('../services/salesSearch.service');
+const { consultarLogistica, formatearLogisticaParaLLM } = require('../services/logisticsSearch.service');
+const { normalize }                                     = require('../services/textUtils.service');
 
 const DEEPSEEK_API_URL = 'https://api.deepseek.com/v1/chat/completions';
 const PYTHON_URL       = process.env.PYTHON_ENGINE_URL || 'http://127.0.0.1:8000/api/ia/process';
@@ -243,12 +243,43 @@ const processChatMessage = async (req, res) => {
             return res.status(403).json({ error: 'Agente no autorizado o inactivo.' });
         }
 
-        const empresa        = config.companies || {};
-        const maxMemory      = config.max_memory_messages ?? 6;
-        const trimmedHistory = history.slice(-(maxMemory));
-        const tieneERP       = !!empresa.erp_mapping?.productos_url;
-        // Motor viene de BD — nunca hardcodeado por agent_id
-        const motor          = config.agent_templates?.motor || 'erp_search';
+        const empresa   = config.companies || {};
+        const maxMemory = config.max_memory_messages ?? 6;
+        const tieneERP  = !!empresa.erp_mapping?.productos_url;
+        const motor     = config.agent_templates?.motor || 'erp_search';
+
+        // ── FIX SEGURIDAD: Historial siempre desde BD ─────────────────────────
+        // El frontend ya no es fuente de verdad del historial.
+        // Si hay session_chat_id, reconstruimos el historial desde messages.
+        // Esto elimina la posibilidad de inyectar mensajes falsos desde el cliente.
+        let trimmedHistory = [];
+        if (session_chat_id) {
+            // Verificar ownership antes de leer los mensajes
+            const { data: sessionOwner } = await supabase
+                .from('session_chats')
+                .select('id, users_id')
+                .eq('id', session_chat_id)
+                .single();
+
+            if (!sessionOwner || sessionOwner.users_id !== req.user.id) {
+                return res.status(403).json({ error: 'Sesión no autorizada.' });
+            }
+
+            const { data: dbMessages } = await supabase
+                .from('messages')
+                .select('content, sender_type')
+                .eq('session_chat_id', session_chat_id)
+                .order('created_at', { ascending: true })
+                .limit(maxMemory * 2); // user + assistant pairs
+
+            if (dbMessages?.length) {
+                trimmedHistory = dbMessages.map(m => ({
+                    role:    m.sender_type === 'USER' ? 'user' : 'assistant',
+                    content: m.content,
+                })).slice(-(maxMemory));
+            }
+        }
+        // Si no hay session_chat_id (primera pregunta), historial vacío — correcto.
 
         // ─────────────────────────────────────────────────────────────────────
         // 2. EXTRACCIÓN DE INTENCIÓN (solo si hay ERP configurado)

@@ -132,7 +132,7 @@ const login = async (req, res) => {
 
         const token = jwt.sign(
             { id: user.id, role: user.role, company_id: user.company_id },
-            process.env.JWT_SECRET || 'super_secreto_b2b_cambiar_luego',
+            process.env.JWT_SECRET,
             { expiresIn: '8h' }
         );
 
