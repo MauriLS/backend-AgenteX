@@ -119,4 +119,52 @@ const deleteAgent = async (req, res) => {
     res.json({ success: true, message: 'Agente desactivado.' });
 };
 
-module.exports = { getMyAgents, getTemplates, getAgents, updateAgent, deleteAgent };
+// POST /api/agents — crear agente para la empresa del ADMIN autenticado
+const createAgent = async (req, res) => {
+    if (req.user.role !== 'ADMIN' && req.user.role !== 'SUPER_ADMIN')
+        return res.status(403).json({ error: 'Sin permisos.' });
+
+    const { agent_template_id, custom_instructions, temperature } = req.body;
+
+    if (!agent_template_id || !custom_instructions)
+        return res.status(400).json({ error: 'agent_template_id y custom_instructions son obligatorios.' });
+
+    // Verificar que el template existe
+    const { data: template } = await supabase
+        .from('agent_templates')
+        .select('id, name')
+        .eq('id', agent_template_id)
+        .single();
+
+    if (!template)
+        return res.status(404).json({ error: 'Template no encontrado.' });
+
+    // Verificar que la empresa no tiene ya ese agente activo
+    const { data: existing } = await supabase
+        .from('company_agents')
+        .select('id')
+        .eq('company_id', req.user.company_id)
+        .eq('agent_template_id', agent_template_id)
+        .eq('is_active', true)
+        .single();
+
+    if (existing)
+        return res.status(409).json({ error: `La empresa ya tiene un agente de tipo "${agent_template_id}" activo.` });
+
+    const { data, error } = await supabase
+        .from('company_agents')
+        .insert([{
+            company_id:          req.user.company_id,
+            agent_template_id,
+            custom_instructions,
+            temperature:         temperature ?? 0.3,
+            is_active:           true,
+        }])
+        .select('id, agent_template_id, custom_instructions, temperature, is_active')
+        .single();
+
+    if (error) return res.status(500).json({ error: error.message });
+    res.status(201).json({ success: true, agent: data });
+};
+
+module.exports = { getMyAgents, getTemplates, getAgents, createAgent, updateAgent, deleteAgent };

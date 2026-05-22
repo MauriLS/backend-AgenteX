@@ -5,6 +5,7 @@ const {
     getMyAgents,
     getTemplates,
     getAgents,
+    createAgent,
     updateAgent,
     deleteAgent,
 } = require('../controllers/agent.controller');
@@ -12,6 +13,7 @@ const {
 router.get('/my-agents',   verifyToken, getMyAgents);
 router.get('/templates',   verifyToken, getTemplates);
 router.get('/',            verifyToken, getAgents);
+router.post('/',           verifyToken, createAgent);
 router.put('/:id',         verifyToken, updateAgent);
 router.delete('/:id',      verifyToken, deleteAgent);
 

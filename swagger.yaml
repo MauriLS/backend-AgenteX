@@ -366,6 +366,49 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  /api/agents:
+    post:
+      tags: [Agentes]
+      summary: Crear agente para la empresa del ADMIN autenticado
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_template_id, custom_instructions]
+              properties:
+                agent_template_id:   { type: string,  example: ventas }
+                custom_instructions: { type: string,  example: "Eres el asesor comercial..." }
+                temperature:         { type: number,  minimum: 0, maximum: 1, example: 0.4 }
+      responses:
+        '201':
+          description: Agente creado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  agent:   { $ref: '#/components/schemas/Agent' }
+        '400':
+          description: Faltan campos obligatorios
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Template no encontrado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: La empresa ya tiene ese agente activo
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /api/agents/{id}:
     put:
       tags: [Agentes]
