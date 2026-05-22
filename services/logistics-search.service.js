@@ -20,12 +20,13 @@ const CACHE_TTL_MS      = 60_000;
 // =============================================================================
 const logisticsCache = new Map();
 
-async function fetchData(url) {
+async function fetchData(url, companyId) {
+    const cacheKey = `${companyId}:${url}`;
     const now = Date.now();
-    if (logisticsCache.has(url)) {
-        const cached = logisticsCache.get(url);
+    if (logisticsCache.has(cacheKey)) {
+        const cached = logisticsCache.get(cacheKey);
         if (now - cached.timestamp < CACHE_TTL_MS) {
-            console.log(`📦 Logistics cache hit → ${url}`);
+            console.log(`📦 Logistics cache hit → ${cacheKey}`);
             return cached.data;
         }
     }
@@ -33,7 +34,7 @@ async function fetchData(url) {
     const response = await fetch(url, { signal: AbortSignal.timeout(15_000) });
     if (!response.ok) throw new Error(`Endpoint respondió ${response.status}`);
     const data = await response.json();
-    logisticsCache.set(url, { timestamp: now, data });
+    logisticsCache.set(cacheKey, { timestamp: now, data });
     return data;
 }
 
@@ -176,7 +177,7 @@ function preAgregarOrdenes(ordenes, K) {
 // =============================================================================
 // FUNCIÓN PRINCIPAL
 // =============================================================================
-async function consultarLogistica({ mensaje, erpUrl, erpMapping }) {
+async function consultarLogistica({ mensaje, erpUrl, erpMapping, companyId }) {
     const K = {
         id:               erpMapping?.id               || 'id',
         numero:           erpMapping?.numero           || 'numero_orden',
@@ -196,7 +197,7 @@ async function consultarLogistica({ mensaje, erpUrl, erpMapping }) {
 
     let ordenes;
     try {
-        ordenes = await fetchData(erpUrl);
+        ordenes = await fetchData(erpUrl, companyId || 'default');
     } catch (err) {
         return { ordenes: null, agregado: null, meta: { error: err.message } };
     }
