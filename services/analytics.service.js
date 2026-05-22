@@ -20,12 +20,13 @@ const CACHE_TTL_MS        = 5 * 60_000; // 5 minutos — suficiente para una ses
 // =============================================================================
 const analyticsCache = new Map();
 
-async function fetchData(url) {
+async function fetchData(url, companyId) {
+    const cacheKey = `${companyId}:${url}`;
     const now = Date.now();
-    if (analyticsCache.has(url)) {
-        const cached = analyticsCache.get(url);
+    if (analyticsCache.has(cacheKey)) {
+        const cached = analyticsCache.get(cacheKey);
         if (now - cached.timestamp < CACHE_TTL_MS) {
-            console.log(`📦 Analytics cache hit → ${url}`);
+            console.log(`📦 Analytics cache hit → ${cacheKey}`);
             return cached.data;
         }
     }
@@ -33,7 +34,7 @@ async function fetchData(url) {
     const response = await fetch(url, { signal: AbortSignal.timeout(15_000) });
     if (!response.ok) throw new Error(`Endpoint analítica respondió ${response.status}`);
     const data = await response.json();
-    analyticsCache.set(url, { timestamp: now, data });
+    analyticsCache.set(cacheKey, { timestamp: now, data });
     return data;
 }
 
@@ -185,14 +186,14 @@ function preAgregar(registros, campoFecha, campoId) {
 // =============================================================================
 // FUNCIÓN PRINCIPAL
 // =============================================================================
-async function consultarAnalitica({ mensaje, erpUrl, erpMapping }) {
+async function consultarAnalitica({ mensaje, erpUrl, erpMapping, companyId }) {
     const campoFecha = erpMapping?.fecha || 'fecha_orden';
     const campoId    = erpMapping?.id    || 'id';
 
     // Fetch con caché
     let registros;
     try {
-        registros = await fetchData(erpUrl);
+        registros = await fetchData(erpUrl, companyId || 'default');
     } catch (err) {
         return { registros: null, agregado: null, meta: { error: err.message } };
     }
