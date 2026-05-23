@@ -13,6 +13,7 @@
 'use strict';
 
 const supabase                                          = require('../config/supabase');
+const logger                                            = require('../logger');
 const { buscarEnERP }                                   = require('../services/erp-search.service');
 const { consultarAnalitica, formatearAnaliticsParaLLM } = require('../services/analytics.service');
 const { buscarParaVentas, formatearVentasParaLLM }      = require('../services/sales-search.service');
@@ -296,10 +297,10 @@ const processChatMessage = async (req, res) => {
             if (motor !== 'analytics') {
             try {
                 intencion = await extraerIntencion(message, empresa.business_context, motor);
-                console.log(`🧠 Intención → termino: "${intencion.termino}" | filtro: "${intencion.filtro}"`);
+                logger.debug({ company_id: companyId, termino: intencion.termino, filtro: intencion.filtro }, 'Intención extraída');
             } catch (err) {
                 // ── FALLBACK LOCAL SIN LLM ───────────────────────────────────
-                console.warn('⚠️  Extractor LLM falló, usando extracción local:', err.message);
+                logger.warn({ company_id: companyId, err }, 'Extractor LLM falló, usando fallback local');
                 const STOP_LOCAL = new Set([
                     'de','para','el','la','los','las','con','sin','en','un','una',
                     'unos','unas','y','o','a','que','del','al','por','se','su','es',
@@ -389,7 +390,7 @@ const processChatMessage = async (req, res) => {
                     productos = [];
                     console.log(`📊 Analítica → modo: ${resultado.meta?.modo} | enviados: ${resultado.meta?.filtrados}`);
                 } catch (err) {
-                    console.error('🚨 Motor analítico falló:', err.message);
+                    logger.error({ company_id: companyId, motor: 'analytics', err }, 'Motor analítico falló');
                     metaERP = { error: err.message };
                 }
             } else if (motor === 'ventas') {
@@ -435,7 +436,7 @@ const processChatMessage = async (req, res) => {
                         _candidatos_previos: resultado.candidatos,
                     };
                 } catch (err) {
-                    console.error('🚨 Motor ventas falló:', err.message);
+                    logger.error({ company_id: companyId, motor: 'ventas', err }, 'Motor ventas falló');
                     metaERP = { error: err.message };
                 }
 
@@ -459,7 +460,7 @@ const processChatMessage = async (req, res) => {
                     };
                     console.log(`📋 Logística → modo: ${resultado.meta?.modo} | órdenes: ${resultado.meta?.filtradas}`);
                 } catch (err) {
-                    console.error('🚨 Motor logística falló:', err.message);
+                    logger.error({ company_id: companyId, motor: 'logistica', err }, 'Motor logística falló');
                     metaERP = { error: err.message };
                 }
 
@@ -475,9 +476,9 @@ const processChatMessage = async (req, res) => {
                     });
                     productos = resultado.productos;
                     metaERP   = resultado.meta;
-                    console.log(`📦 ERP → ${productos.length} resultados | meta:`, metaERP);
+                    logger.info({ company_id: companyId, motor: 'erp_search', resultados: productos.length }, 'Búsqueda ERP completada');
                 } catch (err) {
-                    console.error('🚨 Búsqueda ERP falló:', err.message);
+                    logger.error({ company_id: companyId, motor: 'erp_search', err }, 'Búsqueda ERP falló');
                     metaERP = { error: err.message };
                 }
             }
