@@ -19,7 +19,7 @@ const registerB2B = async (req, res) => {
         } = req.body;
 
         // Solo ADMIN puede aprovisionar empresas
-        if (req.user.role !== 'ADMIN') {
+        if (req.user.role !== 'SUPER_ADMIN') {
             return res.status(403).json({ error: 'No tienes autorización para aprovisionar nuevas empresas.' });
         }
 
