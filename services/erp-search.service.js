@@ -176,9 +176,10 @@ async function buscarEnERP({ termino, filtro, erpUrl, erpMapping, companyId }) {
     //   - mayor_valor / menor_valor / stock_mayor: el ordenamiento devuelve top N
     //   - stock_critico: siempre mostramos todos (son los urgentes)
     //   - conteo_total: devuelve conteo, no lista
-    const UMBRAL = 15;
+    const UMBRAL = 50;
     const FILTROS_SIN_UMBRAL = new Set([
-        'mayor_valor', 'menor_valor', 'stock_mayor', 'stock_critico'
+        'mayor_valor', 'menor_valor', 'stock_mayor', 'stock_critico',
+        'rango_precio', 'rango_stock'
     ]);
 
     if (filtro === 'conteo_total') {
@@ -224,7 +225,61 @@ async function buscarEnERP({ termino, filtro, erpUrl, erpMapping, companyId }) {
 // =============================================================================
 // FILTRADO INTERNO
 // =============================================================================
+// =============================================================================
+// PARSEO DE RANGOS DINÁMICOS
+// Extrae min: y max: del término para filtros de rango.
+// El LLM inyecta "min:X max:Y" en el término — Node.js los parsea aquí.
+// Dinámico: funciona con cualquier campo numérico del ERP.
+// =============================================================================
+function parsearRango(termino) {
+    const minMatch = termino.match(/min:(\d+(?:\.\d+)?)/);
+    const maxMatch = termino.match(/max:(\d+(?:\.\d+)?)/);
+    const min = minMatch ? parseFloat(minMatch[1]) : null;
+    const max = maxMatch ? parseFloat(maxMatch[1]) : null;
+    // Término limpio — sin los tokens de rango
+    const terminoLimpio = termino.replace(/min:\d+(?:\.\d+)?/g, '').replace(/max:\d+(?:\.\d+)?/g, '').trim();
+    return { min, max, terminoLimpio };
+}
+
 function filtrarArticulos(articulos, termino, filtro, K) {
+    // ── Filtros de rango — procesamiento especial ─────────────────────────────
+    if (filtro === 'rango_precio' || filtro === 'rango_stock') {
+        const { min, max, terminoLimpio } = parsearRango(termino);
+        const campoValor = filtro === 'rango_precio' ? K.precio : null; // stock usa _stock_real
+
+        return articulos.filter(art => {
+            // Filtrar por término de texto si hay uno además del rango
+            if (terminoLimpio) {
+                const valNombre = normalize(String(art[K.nombre] || ''));
+                if (!valNombre.includes(normalize(terminoLimpio))) {
+                    // Intentar fuzzy si no hay match exacto
+                    const tokens = removeStopWords(normalize(terminoLimpio).split(' '))
+                        .filter(t => !/\d/.test(t));
+                    const matchTexto = tokens.length === 0 || tokens.every(t =>
+                        valNombre.includes(t) ||
+                        valNombre.split(' ').some(p => p.length > 2 && levenshtein(t, p) <= 2)
+                    );
+                    if (!matchTexto) return false;
+                }
+            }
+
+            // Filtrar por rango numérico
+            let valor;
+            if (filtro === 'rango_precio') {
+                valor = parseFloat(art[K.precio] || 0);
+            } else {
+                // rango_stock — usa _stock_real si está disponible
+                valor = (art._stock_real !== null && art._stock_real !== undefined)
+                    ? parseFloat(art._stock_real)
+                    : parseFloat(art[K.stock] || 0);
+            }
+
+            if (min !== null && valor < min) return false;
+            if (max !== null && valor > max) return false;
+            return true;
+        });
+    }
+
     const terminoNorm = normalize(termino);
     const tokens      = removeStopWords(terminoNorm.split(' '));
 
@@ -301,6 +356,16 @@ function ordenar(resultados, filtro, K) {
                 const sa = a._stock_real ?? parseFloat(a[K.stock] || 0);
                 const sb = b._stock_real ?? parseFloat(b[K.stock] || 0);
                 return sa - sb;
+            });
+        case 'rango_precio':
+            // Ordenar por precio ascendente dentro del rango
+            return r.sort((a, b) => parseFloat(a[K.precio] || 0) - parseFloat(b[K.precio] || 0));
+        case 'rango_stock':
+            // Ordenar por stock descendente dentro del rango
+            return r.sort((a, b) => {
+                const sa = a._stock_real ?? parseFloat(a[K.stock] || 0);
+                const sb = b._stock_real ?? parseFloat(b[K.stock] || 0);
+                return sb - sa;
             });
         default:
             return r;

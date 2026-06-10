@@ -84,6 +84,12 @@ REGLAS DE EXTRACCIÓN:
     "stock_mayor"       → el/los con más stock
     "stock_critico"     → productos con stock bajo (≤ 3 unidades)
     "conteo_total"      → cuántos productos hay en total
+    "rango_precio"      → filtrar por rango de precio. Incluir en termino: "min:X max:Y categoria"
+                          Ej: "precio entre 5000 y 20000" → {"termino":"min:5000 max:20000","filtro":"rango_precio"}
+                          Ej: "neumáticos entre 10000 y 30000" → {"termino":"neumatico min:10000 max:30000","filtro":"rango_precio"}
+    "rango_stock"       → filtrar por rango de stock. Incluir en termino: "min:X max:Y categoria"
+                          Ej: "stock entre 10 y 50" → {"termino":"min:10 max:50","filtro":"rango_stock"}
+                          Ej: "bicicletas con stock mayor a 5" → {"termino":"bicicleta min:5","filtro":"rango_stock"}
 
   Si motor es "analytics" (analítica):
     "resumen"           → totales generales: ingresos, costos, margen, cantidad
@@ -297,7 +303,7 @@ const processChatMessage = async (req, res) => {
             if (motor !== 'analytics') {
             try {
                 intencion = await extraerIntencion(message, empresa.business_context, motor);
-                logger.debug({ company_id: companyId, termino: intencion.termino, filtro: intencion.filtro }, 'Intención extraída');
+                logger.info({ company_id: companyId, termino: intencion.termino, filtro: intencion.filtro }, 'Intención extraída');
             } catch (err) {
                 // ── FALLBACK LOCAL SIN LLM ───────────────────────────────────
                 logger.warn({ company_id: companyId, err }, 'Extractor LLM falló, usando fallback local');
