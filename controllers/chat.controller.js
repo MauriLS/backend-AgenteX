@@ -304,6 +304,7 @@ const processChatMessage = async (req, res) => {
             try {
                 intencion = await extraerIntencion(message, empresa.business_context, motor);
                 logger.info({ company_id: companyId, termino: intencion.termino, filtro: intencion.filtro }, 'Intención extraída');
+                console.log('DEBUG intencion:', JSON.stringify(intencion));
             } catch (err) {
                 // ── FALLBACK LOCAL SIN LLM ───────────────────────────────────
                 logger.warn({ company_id: companyId, err }, 'Extractor LLM falló, usando fallback local');

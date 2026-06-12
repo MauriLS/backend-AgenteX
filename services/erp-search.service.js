@@ -1,16 +1,5 @@
 // backend/services/erpSearch.service.js
-//
-// Motor de búsqueda determinístico para el ERP de cada empresa.
-// Node.js hace el fetch, filtra, ordena y devuelve los productos reales.
-// El LLM nunca toca este proceso — solo recibe los resultados para redactar.
-//
-// Técnicas implementadas:
-//   1. Normalización (tildes, mayúsculas, plurales simples)
-//   2. Tokenización: texto → AND, números → OR (tolerancia a medidas)
-//   3. Fuzzy match con distancia Levenshtein (tolerancia a errores de tipeo)
-//   4. Caché en memoria por tenant con TTL de 60 segundos
-//   5. Feedback loop: si no hay resultados, reintenta con término relajado
-//   6. Join con endpoint de stock real (asignacion-det) via Promise.all
+
 
 'use strict';
 
@@ -245,22 +234,24 @@ function filtrarArticulos(articulos, termino, filtro, K) {
     // ── Filtros de rango — procesamiento especial ─────────────────────────────
     if (filtro === 'rango_precio' || filtro === 'rango_stock') {
         const { min, max, terminoLimpio } = parsearRango(termino);
-        const campoValor = filtro === 'rango_precio' ? K.precio : null; // stock usa _stock_real
 
         return articulos.filter(art => {
-            // Filtrar por término de texto si hay uno además del rango
+            // Filtrar por término de texto + números si hay uno además del rango
             if (terminoLimpio) {
                 const valNombre = normalize(String(art[K.nombre] || ''));
-                if (!valNombre.includes(normalize(terminoLimpio))) {
-                    // Intentar fuzzy si no hay match exacto
-                    const tokens = removeStopWords(normalize(terminoLimpio).split(' '))
-                        .filter(t => !/\d/.test(t));
-                    const matchTexto = tokens.length === 0 || tokens.every(t =>
-                        valNombre.includes(t) ||
-                        valNombre.split(' ').some(p => p.length > 2 && levenshtein(t, p) <= 2)
-                    );
-                    if (!matchTexto) return false;
-                }
+                const tokensLimpio = removeStopWords(normalize(terminoLimpio).split(' '));
+                const tokensTexto  = tokensLimpio.filter(t => !/\d/.test(t));
+                const tokensNum    = tokensLimpio.filter(t => /\d/.test(t));
+
+                // Todos los tokens de texto deben estar (AND)
+                const matchTexto = tokensTexto.length === 0 || tokensTexto.every(t =>
+                    valNombre.includes(t) ||
+                    valNombre.split(' ').some(p => p.length > 2 && levenshtein(t, p) <= 2)
+                );
+                if (!matchTexto) return false;
+
+                // Todos los tokens numéricos deben estar (AND)
+                if (tokensNum.length > 0 && !tokensNum.every(t => valNombre.includes(t))) return false;
             }
 
             // Filtrar por rango numérico
