@@ -1,6 +1,5 @@
 // backend/services/erpSearch.service.js
 
-
 'use strict';
 
 const { removeStopWords, normalize, levenshtein } = require('./text-utils.service');
@@ -141,7 +140,17 @@ async function buscarEnERP({ termino, filtro, erpUrl, erpMapping, companyId }) {
     let terminoUsado = termino;
 
     if (termino === 'ALL') {
-        resultados  = [...articulos];
+        // BUGFIX: stock_critico debe filtrar (≤3 unidades) incluso con termino="ALL".
+        // Antes resultados = [...articulos] bypaseaba el filtro de filtrarArticulos()
+        // y devolvía TODOS los productos ordenados, no solo los críticos.
+        resultados = filtro === 'stock_critico'
+            ? articulos.filter(art => {
+                const stockVal = art._stock_real !== null && art._stock_real !== undefined
+                    ? art._stock_real
+                    : parseFloat(art[K.stock] || 0);
+                return stockVal <= 3;
+            })
+            : [...articulos];
         terminoUsado = 'ALL';
     } else {
         // Intento 1: término completo
