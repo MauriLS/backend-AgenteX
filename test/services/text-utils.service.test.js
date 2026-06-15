@@ -2,7 +2,7 @@
 
 'use strict';
 
-const { normalize, removeStopWords, levenshtein } = require('../services/text-utils.service');
+const { normalize, removeStopWords, levenshtein } = require('../../services/text-utils.service');
 
 // =============================================================================
 // normalize()

@@ -8,7 +8,7 @@
 
 'use strict';
 
-const { consultarAnalitica, formatearAnaliticsParaLLM, invalidarCache } = require('../services/analytics.service');
+const { consultarAnalitica, formatearAnaliticsParaLLM, invalidarCache } = require('../../services/analytics.service');
 
 const DEEPSEEK_API_URL = 'https://api.deepseek.com/v1/chat/completions';
 const ERP_URL = 'http://erp.test/instalaciones';

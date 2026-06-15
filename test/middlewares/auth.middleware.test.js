@@ -1,13 +1,9 @@
 // backend/__tests__/auth.middleware.test.js
-//
-// Pruebas unitarias para middlewares/auth.js
-// Mockea req, res, next. Usa jsonwebtoken real para generar
-// tokens válidos, inválidos y expirados.
 
 'use strict';
 
 const jwt = require('jsonwebtoken');
-const verifyToken = require('../middlewares/auth');
+const verifyToken = require('../../middlewares/auth');
 
 const ORIGINAL_SECRET = 'test_secret_para_pruebas';
 

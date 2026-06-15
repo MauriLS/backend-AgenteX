@@ -5,7 +5,7 @@ const {
   consultarLogistica,
   formatearLogisticaParaLLM,
   invalidarCache,
-} = require('../services/logistics-search.service');
+} = require('../../services/logistics-search.service');
 
 describe('logisticsSearch.service', () => {
   beforeEach(() => {

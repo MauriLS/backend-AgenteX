@@ -1,7 +1,7 @@
 
 'use strict';
 
-const { buscarEnERP, invalidarCache } = require('../services/erp-search.service');
+const { buscarEnERP, invalidarCache } = require('../../services/erp-search.service');
 
 const PRODUCTOS_URL = 'http://erp.test/articulos';
 const STOCK_URL     = 'http://erp.test/asignacion-det';
